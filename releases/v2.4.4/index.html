@@ -1,0 +1,840 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Things Windows</title>
+<script src="/static/tailwindcss.js"></script>
+<script src="/static/vue.global.prod.js"></script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif; }
+  .fade-enter-active, .fade-leave-active { transition: opacity .15s; }
+  .fade-enter-from, .fade-leave-to { opacity: 0; }
+  .task-row:hover { background: #f6f6f8; }
+  .task-row.active { background: #eef4ff; }
+  .sidebar-item.active { background: #eef4ff; color: #1a6eff; font-weight: 500; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-thumb { background: #ccc; border-radius: 3px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; background: #eef4ff; color: #1a6eff; margin: 1px 2px; }
+  .status-pending::before { content: "○ "; }
+  .status-completed::before { content: "✓ "; color: #34a853; text-decoration: line-through; }
+  .status-canceled::before { content: "✕ "; color: #999; }
+</style>
+</head>
+<body class="bg-gray-50 h-screen overflow-hidden">
+<div id="app" class="h-full">
+
+  <!-- 登录页 -->
+  <div v-if="!auth" class="h-full flex items-center justify-center">
+    <div class="bg-white rounded-2xl shadow-xl p-10 w-[420px] border border-gray-100">
+      <div class="text-center mb-8">
+        <div class="inline-block w-14 h-14 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 text-white text-2xl font-bold flex items-center justify-center mb-4">T</div>
+        <h1 class="text-2xl font-semibold text-gray-800">Things Windows</h1>
+        <p class="text-sm text-gray-500 mt-1" v-if="!remembered.has">连接你的 Things Cloud 账号</p>
+        <p class="text-sm text-gray-500 mt-1" v-else>欢迎回来 👋</p>
+      </div>
+
+      <!-- 有记住的账号: 显示 2FA 验证界面 -->
+      <div v-if="remembered.has && !manualLoginMode" class="space-y-4">
+        <div class="flex items-center gap-3 p-3 rounded-lg bg-blue-50 border border-blue-100">
+          <div class="w-9 h-9 rounded-full bg-blue-600 text-white flex items-center justify-center text-sm font-bold">
+            {{ remembered.email?.charAt(0)?.toUpperCase() }}
+          </div>
+          <div class="flex-1 min-w-0">
+            <div class="text-sm font-medium text-gray-700 truncate">{{ remembered.email }}</div>
+            <div class="text-xs text-blue-600">已在本机安全保存</div>
+          </div>
+        </div>
+
+        <!-- 有 2FA: 要求输 PIN -->
+        <div v-if="remembered['2fa']">
+          <label class="text-xs text-gray-500 block mb-1">二次验证密码 (你设置的)</label>
+          <input v-model="form.pin" type="password" required placeholder="••••••••"
+            @keyup.enter="auth2fa"
+            class="w-full px-4 py-2.5 border border-gray-200 rounded-lg focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100">
+        </div>
+
+        <p v-if="loginError" class="text-sm text-red-500">{{ loginError }}</p>
+
+        <div class="flex gap-2">
+          <button @click="auth2fa" :disabled="loading"
+            class="flex-1 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium disabled:opacity-50">
+            {{ loading ? "验证中..." : remembered["2fa"] ? "验证并登录" : "一键登录" }}
+          </button>
+          <button @click="removeRemembered" :disabled="loading"
+            class="px-4 py-2.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-600 text-sm">
+            忘记
+          </button>
+        </div>
+
+        <!-- 手动输入新账号 -->
+        <div class="text-center pt-2">
+          <button @click="useManualLogin" class="text-xs text-gray-500 hover:text-gray-700 underline">
+            使用其他账号登录
+          </button>
+        </div>
+      </div>
+
+      <!-- 手动登录 (没有记住的 / 手动切换) -->
+      <form v-else @submit.prevent="login" class="space-y-4">
+        <div>
+          <label class="text-xs text-gray-500 block mb-1">Things Cloud 邮箱</label>
+          <input v-model="form.email" type="email" required placeholder="you@example.com"
+            class="w-full px-4 py-2.5 border border-gray-200 rounded-lg focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100">
+        </div>
+        <div>
+          <label class="text-xs text-gray-500 block mb-1">Things Cloud 密码</label>
+          <input v-model="form.password" type="password" required placeholder="••••••••"
+            class="w-full px-4 py-2.5 border border-gray-200 rounded-lg focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100">
+        </div>
+
+        <!-- 记住密码 + 二次验证 -->
+        <div class="space-y-2">
+          <label class="flex items-center gap-2 cursor-pointer">
+            <input v-model="form.remember" type="checkbox"
+              class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+            <span class="text-xs text-gray-600">记住此设备 (换电脑不认)</span>
+          </label>
+          <div v-if="form.remember" class="pl-6">
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input v-model="form.enablePin" type="checkbox"
+                class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+              <span class="text-xs text-gray-600">设置二次验证密码 (推荐, 防止别人打开直接进)</span>
+            </label>
+            <input v-if="form.enablePin" v-model="form.pin" type="password"
+              placeholder="4-16 位, 下次登录需要输入"
+              class="mt-2 w-full px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:border-blue-500 text-sm">
+          </div>
+        </div>
+
+        <p v-if="loginError" class="text-sm text-red-500">{{ loginError }}</p>
+        <p class="text-[11px] text-gray-400 leading-relaxed">
+          Things Cloud 是 Cultured Code 官方同步服务。<br>
+          勾选"记住此设备"后, 密码会用 Windows 系统级加密存储, 绑定本机 + 本 Windows 用户。<br>
+          <span v-if="form.remember">拷到别的电脑 → 自动失效 ✅</span>
+        </p>
+        <button :disabled="loading"
+          class="w-full py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium disabled:opacity-50">
+          {{ loading ? "连接中..." : "连接" }}
+        </button>
+      </form>
+      <!-- 登录页底部版本号 -->
+      <div class="mt-4 pt-3 border-t border-gray-100 text-center text-[11px] text-gray-400">
+        Things Windows <span class="text-gray-500">v{{ version }}</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 主界面 -->
+  <div v-else class="h-full flex">
+
+    <!-- 侧边栏 -->
+    <aside class="w-56 bg-white border-r border-gray-100 flex flex-col">
+      <div class="p-4 border-b border-gray-100">
+        <div class="flex items-center justify-between mb-1">
+          <div class="text-sm font-semibold text-gray-800">Things Windows</div>
+          <div class="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">v{{ version }}</div>
+        </div>
+        <div class="text-xs text-gray-500 truncate" :title="account.email">{{ account.email || '未登录' }}</div>
+      </div>
+      <nav class="p-2 flex-1 overflow-y-auto">
+        <a v-for="item in sidebar" :key="item.key"
+          @click="switchList(item.key)"
+          class="sidebar-item flex items-center justify-between px-3 py-2 rounded-lg text-sm cursor-pointer text-gray-600"
+          :class="{active: currentList === item.key}">
+          <span class="flex items-center gap-2">
+            <span>{{ item.icon }}</span>
+            <span>{{ item.label }}</span>
+          </span>
+          <span class="text-xs text-gray-400">{{ item.count }}</span>
+        </a>
+        <!-- 标签展开入口 -->
+        <a @click="tagsExpanded = !tagsExpanded; if(tagsExpanded) fetchTags()"
+          class="sidebar-item flex items-center justify-between px-3 py-2 rounded-lg text-sm cursor-pointer text-gray-600">
+          <span class="flex items-center gap-2"><span>🏷️</span><span>按标签</span></span>
+          <span class="text-xs text-gray-400">{{ tagsExpanded ? '▲' : '▼' }}</span>
+        </a>
+        <!-- 标签子菜单 -->
+        <div v-if="tagsExpanded && tagsList.length" class="pl-3 pr-1 py-1">
+          <a v-for="tg in tagsList" :key="tg.tag"
+            @click="switchList('tag:' + encodeURIComponent(tg.tag))"
+            class="flex items-center justify-between px-2 py-1 rounded text-xs cursor-pointer text-gray-500 hover:bg-gray-100 hover:text-gray-800"
+            :class="{active: currentList === 'tag:' + encodeURIComponent(tg.tag)}">
+            <span class="truncate">{{ tg.tag }}</span>
+            <span class="text-[10px] text-gray-400 ml-1">{{ tg.count }}</span>
+          </a>
+        </div>
+        <div v-if="tagsExpanded && !tagsList.length" class="px-3 py-1 text-xs text-gray-400">暂无标签</div>
+
+        <div class="my-3 border-t border-gray-100"></div>
+        <a @click="currentList='dedup'"
+          class="sidebar-item flex items-center gap-2 px-3 py-2 rounded-lg text-sm cursor-pointer text-gray-600"
+          :class="{active: currentList === 'dedup'}">
+          <span>🧹</span><span>自动去重</span>
+        </a>
+        <a @click="currentList='completed'"
+          class="sidebar-item flex items-center gap-2 px-3 py-2 rounded-lg text-sm cursor-pointer text-gray-600"
+          :class="{active: currentList === 'completed'}">
+          <span>📜</span><span>已完成</span>
+        </a>
+      </nav>
+      <!-- 授权状态条 -->
+      <div class="p-3 border-t border-gray-100 cursor-pointer hover:bg-gray-50" @click="openLicenseModal">
+        <div v-if="licStatus && licStatus.ok" class="flex items-center gap-2 text-xs">
+          <span class="w-2 h-2 rounded-full" :class="licStatus.is_permanent ? 'bg-green-500' : (licStatus.days_remaining <= 7 ? 'bg-orange-500' : 'bg-green-500')"></span>
+          <span class="text-gray-600 truncate">
+            {{ licStatus.is_permanent ? '永久授权' : ('剩余 ' + licStatus.days_remaining + ' 天') }}
+          </span>
+        </div>
+        <div v-else class="flex items-center gap-2 text-xs text-gray-400">
+          <span>🔑</span><span v-if="licStatus && licStatus.reason">授权需激活</span><span v-else>检查中...</span>
+        </div>
+      </div>
+      <div class="p-3 border-t border-gray-100">
+        <button @click="showAddModal=true"
+          class="w-full py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium">
+          + 新建任务
+        </button>
+      </div>
+    </aside>
+
+    <!-- 主内容区 -->
+    <main class="flex-1 flex flex-col overflow-hidden">
+      <header class="px-6 py-4 bg-white border-b border-gray-100 flex items-center justify-between">
+        <div>
+          <h2 class="text-lg font-semibold text-gray-800">{{ currentTitle }}</h2>
+          <p class="text-xs text-gray-500 mt-0.5">{{ currentSubtitle }}</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <input v-if="currentList !== 'dedup'" v-model="searchKeyword" @input="debouncedFetch"
+            placeholder="搜索任务..." class="px-3 py-1.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-blue-500 w-56">
+          <button @click="refresh" class="text-xs px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-600">
+            ↻ 刷新
+          </button>
+        </div>
+      </header>
+
+      <!-- 任务列表 -->
+      <div v-if="currentList !== 'dedup'" class="flex-1 overflow-y-auto">
+        <div v-if="tasks.length === 0" class="h-full flex flex-col items-center justify-center text-gray-400">
+          <div class="text-5xl mb-3">📭</div>
+          <p>没有待办任务</p>
+        </div>
+        <div v-else class="divide-y divide-gray-100">
+          <div v-for="t in tasks" :key="t.uuid"
+            class="task-row px-6 py-3 flex items-center gap-3 cursor-pointer transition-colors"
+            :class="{active: selectedUuid === t.uuid}"
+            @click="selectedUuid = t.uuid; selectedTask = t">
+            <button @click.stop="toggleComplete(t)"
+              class="w-5 h-5 rounded-full border-2 flex items-center justify-center text-xs font-bold"
+              :class="t.human_status === 'completed' ? 'bg-green-500 border-green-500 text-white' : t.human_status === 'canceled' ? 'bg-gray-300 border-gray-300 text-gray-600' : 'border-gray-300 hover:border-blue-500'">
+              <span v-if="t.human_status === 'completed'">✓</span>
+              <span v-else-if="t.human_status === 'canceled'">✕</span>
+              <span v-else class="opacity-0">•</span>
+            </button>
+            <div class="flex-1 min-w-0">
+              <div class="text-sm truncate" :class="t.human_status === 'completed' ? 'text-gray-400 line-through' : 'text-gray-800'">{{ t.title }}</div>
+              <div class="flex items-center gap-3 mt-0.5 text-[11px] truncate">
+                <span v-if="t.created_date" class="text-gray-400">创建 {{ t.created_date }}</span>
+                <span v-if="t.scheduled_date" class="text-blue-600 font-medium">📅 效期 {{ t.scheduled_date }}</span>
+                <span v-if="t.deadline_date" class="text-orange-600 font-medium">⏰ 截止 {{ t.deadline_date }}</span>
+                <span v-if="t.completion_date" class="text-green-600">✅ 完成 {{ t.completion_date }}</span>
+                <span v-if="t.tags && t.tags.length" class="flex">{{ t.tags.slice(0,3).map(tg => `<span class="tag">${tg}</span>`).join('') }}</span>
+                <span v-if="t.notes" class="truncate text-gray-400">📝 {{ t.notes.slice(0,20) }}</span>
+              </div>
+            </div>
+            <span v-if="t.type === 'project'" class="text-xs px-2 py-0.5 bg-purple-100 text-purple-600 rounded">项目</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 去重面板 -->
+      <div v-else class="flex-1 overflow-y-auto p-6">
+        <div class="max-w-3xl mx-auto">
+          <div v-if="!dedupPlan" class="text-center py-16">
+            <div class="text-5xl mb-4">🧹</div>
+            <h3 class="text-lg font-medium text-gray-700 mb-2">一键整理重复任务</h3>
+            <p class="text-sm text-gray-500 mb-6 leading-relaxed">
+              系统会扫描所有待办任务，找出完全相同或高度相似的条目。<br>
+              每组自动保留最早创建的那条，其余移入垃圾桶。
+            </p>
+            <button @click="scanDedupe" :disabled="loading"
+              class="px-6 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium disabled:opacity-50">
+              {{ loading ? "扫描中..." : "🔍 开始扫描" }}
+            </button>
+          </div>
+
+          <div v-else>
+            <div class="bg-white rounded-xl border border-gray-100 p-5 mb-4">
+              <div class="flex items-center justify-between">
+                <div>
+                  <h3 class="font-medium text-gray-800">扫描完成</h3>
+                  <p class="text-sm text-gray-500 mt-0.5">
+                    发现 <b class="text-blue-600">{{ dedupPlan.groups_count }}</b> 组重复，
+                    共 <b class="text-red-500">{{ dedupPlan.total_duplicates }}</b> 条待清除
+                  </p>
+                </div>
+                <div class="flex gap-2">
+                  <button @click="dedupPlan=null" class="text-sm px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50">重新扫描</button>
+                  <button @click="applyDedupe"
+                    :disabled="dedupPlan.total_duplicates === 0 || loading"
+                    class="text-sm px-4 py-1.5 rounded-lg bg-red-500 hover:bg-red-600 text-white disabled:opacity-50">
+                    ⚡ 一键清除 {{ dedupPlan.total_duplicates }} 条
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div v-for="(g, idx) in dedupPlan.groups" :key="idx"
+              class="bg-white rounded-xl border border-gray-100 p-5 mb-3">
+              <div class="flex items-center gap-2 mb-3">
+                <span class="text-[11px] px-2 py-0.5 rounded"
+                  :class="g.type === 'exact' ? 'bg-red-100 text-red-600' : 'bg-orange-100 text-orange-600'">
+                  {{ g.type === 'exact' ? '完全重复' : '相似重复' }}
+                </span>
+                <span class="text-sm font-medium text-gray-700">保留：{{ g.keep_title }}</span>
+              </div>
+              <table class="w-full text-sm">
+                <tbody>
+                  <tr v-for="(m, mi) in g.members" :key="mi" class="border-b border-gray-50 last:border-0">
+                    <td class="py-2 w-8">{{ mi === 0 ? '✅' : '🗑️' }}</td>
+                    <td class="py-2 flex-1" :class="mi === 0 ? 'font-medium text-gray-700' : 'text-gray-500 line-through'">
+                      {{ m.title }}
+                    </td>
+                    <td class="py-2 text-xs text-gray-400 w-24">{{ m.created_date || '未知' }}</td>
+                    <td class="py-2 text-xs w-20 text-gray-400">{{ m.schedule }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div v-if="dedupPlan.groups_count === 0" class="text-center py-8 text-gray-400">
+              🎉 太棒了！没有发现重复任务
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- 右侧详情面板 -->
+    <aside v-if="selectedTask && currentList !== 'dedup'"
+      class="w-80 bg-white border-l border-gray-100 p-5 overflow-y-auto">
+      <div class="flex items-center justify-between mb-3">
+        <span class="text-xs text-gray-400">任务详情</span>
+        <button @click="selectedUuid=null; selectedTask=null" class="text-gray-400 hover:text-gray-600">✕</button>
+      </div>
+      <textarea v-model="selectedTask.title" @blur="quickUpdate"
+        class="w-full text-lg font-medium text-gray-800 bg-transparent border-none resize-none focus:outline-none" rows="2"></textarea>
+      <div class="mt-4 space-y-3 text-sm">
+        <div class="flex items-start gap-2">
+          <span class="w-14 text-gray-400 shrink-0">状态</span>
+          <select v-model="selectedTask.human_status" @change="quickUpdateStatus"
+            class="flex-1 px-2 py-1 border border-gray-200 rounded">
+            <option value="pending">待办</option>
+            <option value="completed">已完成</option>
+            <option value="canceled">已取消</option>
+          </select>
+        </div>
+        <div class="flex items-start gap-2">
+          <span class="w-14 text-gray-400 shrink-0">时间</span>
+          <span class="flex-1 text-gray-700">{{ {inbox:'收件箱',anytime:'今日/随时',someday:'某天/以后'}[selectedTask.schedule] || selectedTask.schedule }}</span>
+        </div>
+        <div class="flex items-start gap-2">
+          <span class="w-14 text-gray-400 shrink-0">备注</span>
+          <div class="flex-1 whitespace-pre-wrap text-gray-600">{{ selectedTask.notes || '—' }}</div>
+        </div>
+        <div class="flex items-start gap-2">
+          <span class="w-14 text-gray-400 shrink-0">标签</span>
+          <div class="flex-1">{{ (selectedTask.tags||[]).map(t=>`<span class="tag">${t}</span>`).join('') || '—' }}</div>
+        </div>
+        <div class="flex items-start gap-2">
+          <span class="w-14 text-gray-400 shrink-0">创建</span>
+          <span class="flex-1 text-gray-600 text-xs">{{ selectedTask.created_date }}</span>
+        </div>
+        <div class="flex items-start gap-2" v-if="selectedTask.scheduled_date">
+          <span class="w-14 text-gray-400 shrink-0">效期</span>
+          <span class="flex-1 text-blue-600 text-xs">📅 {{ selectedTask.scheduled_date }}</span>
+        </div>
+        <div class="flex items-start gap-2" v-if="selectedTask.deadline_date">
+          <span class="w-14 text-gray-400 shrink-0">截止</span>
+          <span class="flex-1 text-orange-600 text-xs">⏰ {{ selectedTask.deadline_date }}</span>
+        </div>
+        <div class="flex items-start gap-2" v-if="selectedTask.completion_date">
+          <span class="w-14 text-gray-400 shrink-0">完成</span>
+          <span class="flex-1 text-green-600 text-xs">✅ {{ selectedTask.completion_date }}</span>
+        </div>
+        <div class="flex gap-2 pt-4 border-t border-gray-100">
+          <button @click="trashSelected" class="flex-1 text-xs py-2 rounded border border-red-200 text-red-500 hover:bg-red-50">🗑️ 移入垃圾桶</button>
+        </div>
+      </div>
+    </aside>
+
+  </div>
+
+  <!-- 新建任务弹窗 -->
+  <Teleport to="body">
+    <Transition name="fade">
+      <div v-if="showAddModal" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showAddModal=false">
+        <div class="bg-white rounded-2xl shadow-2xl w-[460px] p-6">
+          <h3 class="text-lg font-semibold mb-4">新建任务</h3>
+          <form @submit.prevent="addTask" class="space-y-3">
+            <input v-model="newForm.title" required placeholder="任务标题"
+              class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:outline-none focus:border-blue-500">
+            <div class="grid grid-cols-2 gap-3">
+              <select v-model="newForm.when" class="px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:border-blue-500">
+                <option value="">放到收件箱</option>
+                <option value="today">今天</option>
+                <option value="evening">今天晚上</option>
+                <option value="tomorrow">明天</option>
+                <option value="someday">某天再说</option>
+                <option value="2026-10-03">指定日期...</option>
+              </select>
+              <input v-model="newForm.deadline" placeholder="截止 YYYY-MM-DD (可选)"
+                class="px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:border-blue-500">
+            </div>
+            <input v-model="newForm.tags" placeholder="标签 (逗号分隔, 可选)"
+              class="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:border-blue-500">
+            <textarea v-model="newForm.notes" placeholder="备注 (可选)" rows="3"
+              class="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:border-blue-500 resize-none"></textarea>
+            <div class="flex justify-end gap-2 pt-2">
+              <button type="button" @click="showAddModal=false" class="px-4 py-2 rounded-lg border border-gray-200 hover:bg-gray-50 text-sm">取消</button>
+              <button type="submit" :disabled="loading"
+                class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium disabled:opacity-50">
+                {{ loading ? '添加中...' : '添加任务' }}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
+
+  <!-- 授权管理模态框 -->
+  <Teleport to="body">
+    <Transition name="fade">
+      <div v-if="showLicModal" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showLicModal=false">
+        <div class="bg-white rounded-2xl shadow-2xl w-[480px] p-6">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-lg font-semibold">🔑 授权管理</h3>
+            <button @click="showLicModal=false" class="text-gray-400 hover:text-gray-600">✕</button>
+          </div>
+
+          <!-- 当前状态 -->
+          <div class="mb-4 p-3 rounded-lg"
+            :class="licStatus && licStatus.ok ? 'bg-green-50 border border-green-200' : 'bg-gray-50 border border-gray-200'">
+            <div v-if="licStatus && licStatus.ok" class="text-sm text-green-700">
+              ✅ {{ licStatus.is_permanent ? '永久授权' : (licStatus.days_remaining + ' 天有效期') }}
+              <div class="text-xs text-green-600 mt-1">到期: {{ licStatus.expiry_date }}</div>
+            </div>
+            <div v-else class="text-sm text-gray-500">
+              {{ licStatus && licStatus.reason ? licStatus.reason : '未激活' }}
+            </div>
+          </div>
+
+          <!-- 我的机器码 -->
+          <div class="mb-4">
+            <div class="text-xs text-gray-500 mb-1">📋 我的机器码 (发给授权方)</div>
+            <div class="flex gap-2">
+              <input :value="machineCode" readonly
+                class="flex-1 px-3 py-2 text-sm font-mono bg-gray-100 border border-gray-200 rounded" />
+              <button @click="copyMachineCode"
+                class="px-3 py-2 text-sm rounded border border-gray-200 hover:bg-gray-50">复制</button>
+            </div>
+          </div>
+
+          <!-- 激活输入 -->
+          <div class="mb-4">
+            <div class="text-xs text-gray-500 mb-1">🎟️ 输入授权码</div>
+            <div class="flex gap-2">
+              <input v-model="licKey" placeholder="粘贴授权码..."
+                class="flex-1 px-3 py-2 text-sm border border-gray-200 rounded focus:outline-none focus:border-blue-500" />
+              <button @click="activateLicense" :disabled="licLoading || !licKey"
+                class="px-4 py-2 text-sm rounded bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50">
+                {{ licLoading ? '激活中...' : '激活' }}
+              </button>
+            </div>
+          </div>
+
+          <!-- 错误提示 -->
+          <div v-if="licError" class="text-sm text-red-500 mb-2">{{ licError }}</div>
+
+          <!-- 撤销 -->
+          <div v-if="licStatus && licStatus.ok" class="text-center pt-3 border-t border-gray-100">
+            <button @click="revokeLicense"
+              class="text-xs text-gray-400 hover:text-red-500">撤销本机授权</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
+
+  <!-- Toast -->
+  <Transition name="fade">
+    <div v-if="toast" class="fixed bottom-6 left-1/2 -translate-x-1/2 px-5 py-2.5 rounded-full text-sm shadow-lg z-50"
+      :class="toast.ok ? 'bg-gray-800 text-white' : 'bg-red-500 text-white'">
+      {{ toast.msg }}
+    </div>
+  </Transition>
+
+</div>
+
+<script>
+const { createApp, ref, computed, onMounted, onUnmounted } = Vue;
+
+const API = (path, opts = {}) => fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts }).then(r => r.json());
+
+createApp({
+  setup() {
+    const auth = ref(false);
+    const account = ref({ email: '' });
+    const version = ref('2.4');  // 后端实际版本, 启动时从 /api/health 拉取
+    const form = ref({ email: '', password: '', remember: true, enablePin: false, pin: '' });
+    const loginError = ref('');
+    const loading = ref(false);
+    const remembered = ref({ has: false, email: null, '2fa': false });
+    const manualLoginMode = ref(false);  // 用户点了"使用其他账号登录"
+
+    // ---- 授权码 ----
+    const licStatus = ref({ has_license: false, ok: false });
+    const machineCode = ref('');
+    const showLicModal = ref(false);
+    const licKey = ref('');
+    const licError = ref('');
+    const licLoading = ref(false);
+
+    const currentList = ref('today');
+    const tasks = ref([]);
+    const searchKeyword = ref('');
+    const selectedUuid = ref(null);
+    const selectedTask = ref(null);
+
+    const showAddModal = ref(false);
+    const newForm = ref({ title: '', when: '', deadline: '', tags: '', notes: '' });
+    const toast = ref(null);
+    const dedupPlan = ref(null);
+
+    // ---- 侧边栏 ----
+    const stats = ref({});
+    async function fetchStats() {
+      try {
+        const r = await API('/api/stats');
+        if (r.ok) stats.value = r.counts || {};
+      } catch(e){}
+    }
+    const sidebar = computed(() => {
+      const s = stats.value;
+      return [
+        { key: 'inbox',    label: '收件箱',   icon: '📥', count: s.inbox    || 0 },
+        { key: 'today',    label: '今天',     icon: '⭐', count: s.today    || 0 },
+        { key: 'projects', label: '计划',     icon: '📁', count: s.projects || 0 },
+        { key: 'anytime',  label: '随时',     icon: '⏰', count: s.anytime  || 0 },
+        { key: 'someday',  label: '某天',     icon: '⏳', count: s.someday  || 0 },
+        { key: 'logbook',  label: '日志簿',   icon: '📖', count: s.logbook  || 0 },
+        { key: 'all',      label: '全部',     icon: '📋', count: s.all      || 0 },
+        { key: 'trash',    label: '垃圾桶',   icon: '🗑️', count: s.trash    || 0 },
+      ];
+    });
+
+    // 标签列表 (侧边栏展开用)
+    const tagsList = ref([]);
+    const tagsExpanded = ref(false);
+    async function fetchTags() {
+      try {
+        const r = await API('/api/tags');
+        if (r.ok) tagsList.value = r.tags || [];
+      } catch(e) {}
+    }
+
+    const currentTitle = computed(() => {
+      const cl = currentList.value;
+      if (cl.startsWith('tag:')) return '🏷️ ' + decodeURIComponent(cl.slice(4));
+      return ({
+        inbox: '收件箱', today: '今天', projects: '计划', anytime: '随时',
+        someday: '某天', all: '全部任务', logbook: '日志簿', dedup: '自动去重',
+        trash: '垃圾桶', tags: '按标签归类',
+      })[cl] || cl;
+    });
+
+    const currentSubtitle = computed(() => {
+      const cl = currentList.value;
+      if (cl.startsWith('tag:')) return '所有带此标签的任务';
+      return ({
+      inbox: '刚录入的待办事项',
+      today: '今天必须做的事',
+      projects: '有明确目标的大型任务',
+      anytime: '以后任何时候都可以',
+      someday: '以后再说的事',
+      all: '所有待办任务',
+      logbook: '已完成 + 已取消',
+      dedup: '扫描并清理重复项',
+      trash: '已移到垃圾桶的任务 (30天自动清除)',
+    }[currentList.value] || ''));
+
+    // ---- 认证 ----
+    async function login() {
+      loginError.value = ''; loading.value = true;
+      try {
+        const res = await API('/api/auth', { method: 'POST', body: JSON.stringify(form.value) });
+        if (res.ok) {
+          auth.value = true;
+          account.value.email = res.email;
+          fetchStats();
+          fetchTasks();
+        } else {
+          loginError.value = res.error || '连接失败';
+        }
+      } catch (e) { loginError.value = '网络错误: ' + e.message; }
+      loading.value = false;
+    }
+
+    // ---- 记住密码: 2FA 登录 ----
+    async function auth2fa() {
+      loginError.value = ''; loading.value = true;
+      try {
+        const body = remembered.value['2fa']
+          ? { pin: form.value.pin }
+          : {};  // 没设 2FA → 空 body
+        const res = await API('/api/auth-2fa', { method: 'POST', body: JSON.stringify(body) });
+        if (res.ok) {
+          auth.value = true;
+          account.value.email = res.email;
+          form.value.pin = '';  // 清掉
+          fetchStats();
+          fetchTasks();
+        } else {
+          loginError.value = res.error || '登录失败';
+        }
+      } catch (e) { loginError.value = '网络错误: ' + e.message; }
+      loading.value = false;
+    }
+
+    async function removeRemembered() {
+      await API('/api/remove-remembered', { method: 'POST', body: '{}' });
+      remembered.value = { has: false, email: null, '2fa': false };
+      manualLoginMode.value = true;
+    }
+
+    function useManualLogin() {
+      remembered.value = { has: false, email: null, '2fa': false };
+      manualLoginMode.value = true;
+    }
+
+    async function logout() {
+      await API('/api/logout', { method: 'POST' });
+      auth.value = false; tasks.value = []; dedupPlan.value = null;
+    }
+
+    // ---- 数据 ----
+    async function fetchTasks() {
+      loading.value = true;
+      try {
+        let url;
+        const cl = currentList.value;
+        if (cl.startsWith('tag:')) {
+          // 按标签过滤
+          const tagName = decodeURIComponent(cl.slice(4));
+          url = `/api/tasks?tag=${encodeURIComponent(tagName)}`;
+        } else if (cl === 'completed') {
+          url = '/api/completed';
+        } else if (cl === 'all') {
+          url = '/api/tasks/all';
+        } else {
+          url = `/api/tasks?list=${cl}${searchKeyword.value ? '&q=' + encodeURIComponent(searchKeyword.value) : ''}`;
+        }
+        const res = await API(url);
+        if (res.ok) tasks.value = res.tasks || [];
+      } catch (e) { showToast({ok:false, msg:'加载失败'}); }
+      loading.value = false;
+    }
+
+    let debounceTimer = null;
+    function debouncedFetch() {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(fetchTasks, 300);
+    }
+
+    function switchList(k) { currentList.value = k; selectedUuid.value = null; selectedTask.value = null; fetchTasks(); }
+    async function refresh() { dedupPlan.value = null; await fetchTasks(); showToast({ok:true, msg:'已刷新'}); }
+
+    // ---- 任务操作 ----
+    async function addTask() {
+      if (!newForm.value.title.trim()) return;
+      loading.value = true;
+      const body = { title: newForm.value.title.trim() };
+      if (newForm.value.when) body.when = newForm.value.when;
+      if (newForm.value.deadline) body.deadline = newForm.value.deadline;
+      if (newForm.value.tags) body.tags = newForm.value.tags.split(',').map(s => s.trim()).filter(Boolean);
+      if (newForm.value.notes) body.notes = newForm.value.notes;
+      const res = await API('/api/tasks', { method: 'POST', body: JSON.stringify(body) });
+      loading.value = false;
+      if (res.ok) {
+        showAddModal.value = false;
+        newForm.value = { title: '', when: '', deadline: '', tags: '', notes: '' };
+        showToast({ok: true, msg: '✅ 已添加'});
+        fetchTasks();
+      } else {
+        showToast({ok: false, msg: res.error || '添加失败'});
+      }
+    }
+
+    async function toggleComplete(t) {
+      const newStatus = t.human_status === 'completed' ? 0 : 3;
+      // 简单实现: 点选后刷新
+      const res = await API('/api/tasks/complete', { method: 'POST', body: JSON.stringify({ uuid: t.uuid }) });
+      if (res.ok) { showToast({ok:true, msg:'✅ 已完成'}); fetchTasks(); }
+      else showToast({ok:false, msg: res.error||'操作失败'});
+    }
+
+    async function trashSelected() {
+      if (!selectedTask.value) return;
+      const res = await API('/api/tasks/trash', { method: 'POST', body: JSON.stringify({ uuid: selectedTask.value.uuid }) });
+      if (res.ok) {
+        showToast({ok:true, msg:'🗑️ 已移入垃圾桶'});
+        selectedUuid.value = null; selectedTask.value = null;
+        fetchTasks();
+      }
+    }
+
+    // ---- 去重 ----
+    async function scanDedupe() {
+      loading.value = true;
+      try {
+        const res = await API('/api/dedupe/plan');
+        if (res.ok) dedupPlan.value = res.plan;
+      } catch (e) { showToast({ok:false, msg:'扫描失败'}); }
+      loading.value = false;
+    }
+
+    async function applyDedupe() {
+      if (!dedupPlan.value) return;
+      if (!confirm(`确定清除 ${dedupPlan.value.total_duplicates} 条重复任务吗? (将移入 Things 垃圾桶)`)) return;
+      loading.value = true;
+      const uuids = dedupPlan.value.groups.flatMap(g => g.remove_uuids);
+      const res = await API('/api/dedupe/apply', { method: 'POST', body: JSON.stringify({ remove_uuids: uuids }) });
+      loading.value = false;
+      if (res.ok) {
+        showToast({ok:true, msg:`⚡ 已清除 ${res.removed} 条`});
+        dedupPlan.value = null;
+        fetchTasks();
+      } else {
+        showToast({ok:false, msg: res.error||'清除失败'});
+      }
+    }
+
+    // ---- 授权码 ----
+    async function fetchLicense() {
+      try {
+        licStatus.value = await API('/api/license');
+      } catch (e) {}
+    }
+    async function fetchMachineCode() {
+      try {
+        const res = await API('/api/machine-code');
+        if (res.ok) machineCode.value = res.machine_code;
+      } catch (e) {}
+    }
+    function openLicenseModal() {
+      fetchMachineCode();
+      licError.value = '';
+      licKey.value = '';
+      showLicModal.value = true;
+    }
+    async function copyMachineCode() {
+      try { await navigator.clipboard.writeText(machineCode.value); showToast({ok:true, msg:'已复制'}); }
+      catch (e) { showToast({ok:false, msg:'复制失败'}); }
+    }
+    async function activateLicense() {
+      licError.value = '';
+      licLoading.value = true;
+      try {
+        const res = await API('/api/license/activate', { method: 'POST', body: JSON.stringify({ license: licKey.value }) });
+        if (res.ok) {
+          showToast({ ok: true, msg: res.message });
+          licKey.value = '';
+          fetchLicense();
+        } else {
+          licError.value = res.error || '激活失败';
+        }
+      } catch (e) { licError.value = '网络错误'; }
+      licLoading.value = false;
+    }
+    async function revokeLicense() {
+      if (!confirm('确定撤销本机授权?')) return;
+      await API('/api/license/revoke', { method: 'POST', body: '{}' });
+      fetchLicense();
+      showToast({ ok: true, msg: '已撤销' });
+    }
+
+    // ---- Toast ----
+    let toastTimer = null;
+    function showToast(t) {
+      clearTimeout(toastTimer);
+      toast.value = t;
+      toastTimer = setTimeout(() => toast.value = null, 2500);
+    }
+
+    // ---- 自动轮询: 每 15 秒从云端拉新数据 (iPhone 那边完成的任务 PC 端要能看到) ----
+    let pollTimer = null;
+    const POLL_INTERVAL = 15000;  // 15 秒
+
+    // ---- 初始化 ----
+    onMounted(async () => {
+      try {
+        // 加载授权状态 (不管登录没登录)
+        fetchLicense();
+
+        // 拉后端版本号
+        try {
+          const h = await API('/api/health');
+          if (h.display_version) version.value = h.display_version;
+        } catch (e) {}
+
+        // 先检查有没有记住的账号 (后端会验证设备指纹 + DPAPI)
+        const remRes = await API('/api/remembered');
+        if (remRes.ok && remRes.has) {
+          remembered.value = { has: true, email: remRes.email, '2fa': remRes['2fa'] };
+        }
+
+        const res = await API('/api/health');
+        if (res.authenticated) {
+          const acc = await API('/api/account');
+          account.value.email = acc.email;
+          auth.value = true;
+          fetchTasks();
+          fetchStats();
+          // 启动定时轮询
+          pollTimer = setInterval(() => {
+            if (auth.value) {
+              fetchTasks();
+              fetchStats();
+            }
+          }, POLL_INTERVAL);
+        }
+      } catch (e) {}
+    });
+
+    onUnmounted(() => {
+      if (pollTimer) clearInterval(pollTimer);
+    });
+
+    return {
+      auth, account, version, form, loginError, loading, remembered,
+      currentList, currentTitle, currentSubtitle, sidebar,
+      tasks, searchKeyword, selectedUuid, selectedTask,
+      showAddModal, newForm, toast, stats, dedupPlan,
+      // 标签归类
+      tagsList, tagsExpanded, fetchTags,
+      // 授权码
+      licStatus, machineCode, showLicModal, licKey, licError, licLoading,
+      login, logout, auth2fa, removeRemembered, useManualLogin,
+      fetchTasks, debouncedFetch, switchList, refresh,
+      addTask, toggleComplete, trashSelected,
+      scanDedupe, applyDedupe,
+      openLicenseModal, copyMachineCode, activateLicense, revokeLicense,
+    };
+  }
+}).mount('#app');
+</script>
+</body>
+</html>

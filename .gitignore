@@ -1,0 +1,17 @@
+﻿# PyInstaller 产物
+build/
+dist/
+*.spec
+
+# 运行时数据
+things_debug.log
+%APPDATA%/ThingsWindows/license.dat
+%APPDATA%/ThingsWindows/credentials.dat
+
+# 临时调试脚本
+_*.py
+
+# Python
+__pycache__/
+*.pyc
+*.pyo

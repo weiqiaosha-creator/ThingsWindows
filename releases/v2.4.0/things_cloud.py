@@ -1,0 +1,996 @@
+# -*- coding: utf-8 -*-
+"""
+Things Cloud API — Python 跨平台客户端
+直接通过 Cultured Code 的 Things Cloud 服务同步任务数据。
+参考: github.com/arthursoares/things-cloud-sdk (MIT License)
+      github.com/evanpurkhiser/things3-cloud (MIT License)
+"""
+
+import base64
+import io
+import json
+import logging
+import os
+import uuid as uuid_mod
+from datetime import datetime, timezone, timedelta
+
+import requests
+
+# 日志 —— 默认输出到 stderr；app.py 启动时会重定向到文件
+_log = logging.getLogger("things")
+
+# ============================================================
+# 常量
+# ============================================================
+
+API_ENDPOINT = "https://cloud.culturedcode.com"
+
+# =====================================================================
+# 🚨🚨🚨 终极伪装: 和你 iPhone 完全一致! 🚨🚨🚨
+#
+# 你 iPhone 是 Things 3.21.8 — 我们必须伪装成 "ThingsiPhone/3.21.8"
+# 否则 iPhone 看到 history 里有 "比我新的客户端版本" → 强制弹"必须更新"
+#
+# 版本号编码: Things 3.21.x 时代用 5 位 (主1+次2+修2)
+#   3.21.8 = 3 + 21 + 08 = "32108"
+#
+# EntityType: Task6 (iPhone 3.21.x 认识)
+# Schema: 201 (Task6 配套)
+# =====================================================================
+
+THINGS_VERSION_CODE = "32108"           # iPhone Things 3.21.8 (5位编码)
+THINGS_USER_AGENT = f"ThingsiPhone/{THINGS_VERSION_CODE}"   # ThingsiPhone/32108
+THINGS_APP_ID = "com.culturedcode.ThingsiPhone"
+THINGS_APP_INSTANCE_ID = (
+    "000000000000000000000000000000000000000000000000000000000000000-"
+    f"{THINGS_APP_ID}-"
+    "000000000000000000000000000000000000000000000000000000000000000"
+)
+SCHEMA_HEADER = "201"                   # Task6 配套 schema
+
+# Schedule 字段 (st)
+ST_INBOX = 0        # Inbox
+ST_ANYTIME = 1      # Anytime / Today (需要配合 sr 日期)
+ST_SOMEDAY = 2      # Someday / Upcoming
+
+# Status 字段 (ss)
+SS_PENDING = 0
+SS_CANCELED = 2
+SS_COMPLETED = 3
+
+# Item Kind
+KIND_TASK6 = "Task6"  # Things 3.21.x 兼容 (iPhone 3.21.8)
+KIND_TASK7 = "Task7"
+KIND_AREA = "Area3"
+KIND_TAG = "Tag4"
+KIND_CHECKLIST = "ChecklistItem3"
+KIND_TOMBSTONE = "Tombstone2"
+
+# Action (t)
+ACTION_CREATED = 0
+ACTION_MODIFIED = 1
+
+
+# ============================================================
+# Base58 编解码 (Bitcoin alphabet)
+# ============================================================
+
+BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+
+def _b58encode(data: bytes) -> str:
+    """将任意字节串编码为 Base58 字符串。"""
+    # 计算前导 0x00 字节数量 -> 对应前导 '1'
+    zeros = 0
+    for b in data:
+        if b == 0:
+            zeros += 1
+        else:
+            break
+    # 大整数转换
+    n = int.from_bytes(data, "big")
+    if n == 0:
+        return "1" * zeros
+    result = []
+    while n > 0:
+        n, mod = divmod(n, 58)
+        result.append(BASE58_ALPHABET[mod])
+    # 前导 1 + 反转
+    return ("1" * zeros) + "".join(reversed(result))
+
+
+def _b58decode(s: str) -> bytes:
+    """将 Base58 字符串解码为原始字节串。"""
+    zeros = 0
+    for c in s:
+        if c == "1":
+            zeros += 1
+        else:
+            break
+    n = 0
+    for c in s[zeros:]:
+        idx = BASE58_ALPHABET.find(c)
+        if idx < 0:
+            raise ValueError(f"Invalid Base58 char: {c!r}")
+        n = n * 58 + idx
+    if n == 0:
+        return b"\x00" * zeros
+    # 计算需要多少字节
+    byte_len = (n.bit_length() + 7) // 8
+    raw = n.to_bytes(byte_len, "big")
+    return b"\x00" * zeros + raw
+
+
+def new_uuid() -> str:
+    """生成 Things Cloud 兼容的 Base58 UUID。"""
+    u = uuid_mod.uuid4()
+    return _b58encode(u.bytes)
+
+
+def validate_uuid(s: str) -> bool:
+    """验证 Base58 UUID 合法性 (必须解码为恰好 16 字节)。"""
+    try:
+        raw = _b58decode(s)
+        return len(raw) == 16
+    except Exception:
+        return False
+
+
+# ============================================================
+# 时间工具
+# ============================================================
+
+# =====================================================================
+# 时间戳说明 (来自 Go SDK arthursoares/things-cloud-sdk)
+# Things Cloud 的 Timestamp 使用"秒级 Unix 时间戳" (带小数, float64)
+# 例如: cd=1495662927.014228, sr=1495584000, tir=1495584000
+# =====================================================================
+
+def _things_now() -> float:
+    """Things Cloud 使用的秒级 Unix 时间戳 (UTC, 带小数)。"""
+    return datetime.now(timezone.utc).timestamp()
+
+
+def _date_to_ts(ymd: str) -> float:
+    """
+    将 YYYY-MM-DD 转换为 Things Cloud 使用的秒级时间戳 (本地时区零点)。
+    Things 的 sr / tir / dd / cd / md / sp 字段存的是秒级时间戳。
+    """
+    dt = datetime.strptime(ymd, "%Y-%m-%d")
+    # 本地时区午夜时间戳
+    local_offset = datetime.now().astimezone().utcoffset()
+    epoch_aware = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    dt_local = dt.replace(tzinfo=timezone(local_offset))
+    return float((dt_local - epoch_aware).total_seconds())
+
+
+def _resolve_when(when: str) -> tuple[int, float | None]:
+    """
+    将 Things URL Scheme 风格的 when 值解析为 (st, sr_ts) 元组。
+    when: 'today' | 'evening' | 'tomorrow' | 'anytime' | 'someday' | 'inbox' | 'YYYY-MM-DD'
+    返回的 sr_ts 是秒级 Unix 时间戳 (float)。
+    """
+    today = datetime.now()
+    if when in ("inbox", None):
+        return ST_INBOX, None
+    elif when in ("anytime", "Today", "today", "evening", "This Evening"):
+        return ST_ANYTIME, _date_to_ts(today.strftime("%Y-%m-%d"))
+    elif when in ("tomorrow",):
+        tmr = today + timedelta(days=1)
+        return ST_SOMEDAY, _date_to_ts(tmr.strftime("%Y-%m-%d"))
+    elif when in ("someday", "Someday"):
+        return ST_SOMEDAY, None
+    else:
+        # 尝试解析为 YYYY-MM-DD
+        try:
+            return ST_SOMEDAY, _date_to_ts(when)
+        except ValueError:
+            return ST_ANYTIME, _date_to_ts(today.strftime("%Y-%m-%d"))
+
+
+# ============================================================
+# 客户端
+# ============================================================
+
+class ThingsCloudError(Exception):
+    pass
+
+
+class ThingsClient:
+    """Things Cloud HTTP 客户端。"""
+
+    # 🚨 终极伪装: 完全复刻 iPhone Things 3.21.8
+    # iPhone 看到 history 里有 ThingsiPhone/32108 → 认为是"同版本同平台" → 不弹更新!
+    CLIENT_INFO = {
+        "dm": "iPhone14,2",           # iPhone 13 Pro (常见设备型号)
+        "lr": "CN",
+        "nf": True,
+        "nk": True,
+        "nn": "ThingsiPhone",
+        "nv": THINGS_VERSION_CODE,    # "32108" — 5位编码 3.21.8
+        "on": "iOS",
+        "ov": "16.2",                  # 精确匹配你的 iPhone iOS 版本
+        "pl": "zh-CN",
+        "ul": "zh-Hans-CN",
+    }
+
+    def __init__(self, email: str, password: str, endpoint: str = API_ENDPOINT):
+        self.email = email
+        self.password = password
+        self.endpoint = endpoint
+        self.session = requests.Session()
+        self.session.timeout = 30
+
+    # ---------- HTTP 底层 ----------
+
+    def _headers(self, extra: dict | None = None) -> dict:
+        headers = {
+            "Host": "cloud.culturedcode.com",
+            "User-Agent": THINGS_USER_AGENT,
+            "Accept": "application/json",
+            "Accept-Charset": "UTF-8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Authorization": f"Password {self.password}",
+            "Content-Type": "application/json; charset=UTF-8",
+            "Content-Encoding": "UTF-8",
+            "Things-Client-Info": base64.b64encode(
+                json.dumps(self.CLIENT_INFO, separators=(",", ":")).encode()
+            ).decode(),
+            # ✅ Schema header —— 所有请求都要带 (Go SDK + Rust SDK 统一做法)
+            "Schema": SCHEMA_HEADER,
+            "App-Id": THINGS_APP_ID,
+            "App-Instance-Id": THINGS_APP_INSTANCE_ID,
+        }
+        if extra:
+            headers.update(extra)
+        return headers
+
+    def _get(self, path: str, params: dict | None = None) -> requests.Response:
+        return self.session.get(
+            f"{self.endpoint}{path}",
+            headers=self._headers(),
+            params=params,
+        )
+
+    def _post(self, path: str, body: dict, extra_headers: dict | None = None, params: dict | None = None) -> requests.Response:
+        h = self._headers(extra_headers)
+        return self.session.post(
+            f"{self.endpoint}{path}",
+            headers=h,
+            params=params,
+            data=json.dumps(body).encode(),
+        )
+
+    # ---------- 账号 / 认证 ----------
+
+    history_key: str | None = None
+
+    def verify(self) -> dict:
+        """验证凭据有效，返回账户信息。
+        Rust SDK authenticate() 直接从这里拿 history-key — 不需要额外 endpoint!
+        """
+        resp = self._get(f"/version/1/account/{self.email}")
+        if resp.status_code == 401:
+            raise ThingsCloudError("认证失败 — 邮箱或密码错误")
+        if resp.status_code != 200:
+            raise ThingsCloudError(f"Verify 失败: HTTP {resp.status_code} {resp.text[:200]}")
+        data = resp.json()
+        # ✅ 从 verify 响应里拿 history-key (Rust SDK authenticate())
+        self.history_key = data.get("history-key") or data.get("uuid")
+        return data
+
+    # ---------- History ----------
+
+    def get_history_keys(self) -> list[str]:
+        """返回 history key (Rust SDK 只有一个, 从 verify 响应里拿)。"""
+        if not self.history_key:
+            self.verify()  # verify 会自动设 self.history_key
+        return [self.history_key] if self.history_key else []
+
+    def get_history_head(self, history_key: str) -> dict:
+        """获取 history 元数据 (latest-server-index 等)。"""
+        resp = self._get(f"/version/1/history/{history_key}")
+        if resp.status_code != 200:
+            raise ThingsCloudError(f"获取 history 头失败: HTTP {resp.status_code}")
+        return resp.json()
+
+    def sync_history_items(self, history_key: str, start_index: int = 0) -> tuple[list, int]:
+        """
+        拉取自 start_index 以来所有 history items。
+        返回 (all_items, current_head_index)。
+        """
+        all_items = []
+        cursor = start_index
+        current_head = cursor
+
+        while True:
+            resp = self._get(
+                f"/version/1/history/{history_key}/items",
+                params={"start-index": cursor},
+            )
+            if resp.status_code != 200:
+                raise ThingsCloudError(f"Sync items 失败: HTTP {resp.status_code}")
+            data = resp.json()
+            items_batch = data.get("items", [])
+            current_head = data.get("current-item-index", cursor)
+
+            for item_bucket in items_batch:
+                for uuid_key, item in item_bucket.items():
+                    item["uuid"] = uuid_key
+                    item["server_index"] = cursor
+                    all_items.append(item)
+                cursor += 1
+
+            if cursor >= current_head or not items_batch:
+                break
+
+        return all_items, current_head
+
+    # ---------- 写入 ----------
+
+    def commit(self, history_key: str, items: list[dict], ancestor_index: int) -> int:
+        """
+        向 history 提交一次 commit。
+        items: [{uuid: "...", "e": "Task6", "t": 0, "p": {...}}, ...]
+        返回新的 server-head-index。
+
+        自动处理 Things Cloud 冲突 (HTTP 409)：
+        - 手机/iPad 同时做了修改时，ancestor_index 过期
+        - 后端返回新的 latest-server-index → 重新 commit
+        - 最多重试 5 次，避免无限循环
+        """
+        extra = {
+            "Schema": SCHEMA_HEADER,
+            "Push-Priority": "10",          # Rust things3-cloud 用 10
+            "App-Instance-Id": THINGS_APP_INSTANCE_ID,
+            "App-Id": THINGS_APP_ID,
+        }
+        body = {it["uuid"]: {"e": it["e"], "t": it["t"], "p": it["p"]} for it in items}
+
+        _log.info(f"[commit] ancestor={ancestor_index} items={len(items)} schema={SCHEMA_HEADER} appid={THINGS_APP_ID}")
+
+        for attempt in range(5):
+            resp = self._post(
+                f"/version/1/history/{history_key}/commit",
+                body=body,
+                extra_headers=extra,
+                params={"ancestor-index": ancestor_index, "_cnt": len(items)},
+            )
+            _log.info(f"[commit] attempt={attempt+1} HTTP={resp.status_code}")
+            if resp.status_code == 200:
+                new_head = resp.json().get("server-head-index", ancestor_index)
+                _log.info(f"[commit] ✅ 成功 new_head={new_head}")
+                return new_head
+            if resp.status_code == 409:
+                _log.info(f"[commit] ⚠️ 409 冲突 — 重试")
+                try:
+                    data = resp.json()
+                    new_ancestor = data.get("latest-server-index")
+                    _log.info(f"[commit]   server 建议 ancestor={new_ancestor}")
+                    if new_ancestor and new_ancestor > ancestor_index:
+                        ancestor_index = new_ancestor
+                        continue
+                except Exception:
+                    pass
+                head = self.get_history_head(history_key)
+                ancestor_index = head.get("latest-server-index", ancestor_index + 1)
+                _log.info(f"[commit]   从 head 获取 ancestor={ancestor_index}")
+                continue
+            _log.info(f"[commit] ❌ HTTP {resp.status_code}: {resp.text[:300]}")
+            raise ThingsCloudError(
+                f"Commit 失败: HTTP {resp.status_code} {resp.text[:300]}"
+            )
+        raise ThingsCloudError("Commit 重试 5 次后仍然冲突，请稍后再试")
+
+
+# ============================================================
+# Task 构建器 —— Task7 format (evanpurkhiser Rust SDK 生产代码使用)
+# ============================================================
+
+def build_task6_create_payload(
+    title: str,
+    notes: str | None = None,
+    when: str | None = None,
+    deadline: str | None = None,
+    tags: list[str] | None = None,
+    project_uuid: str | None = None,
+    area_uuid: str | None = None,
+) -> dict:
+    """
+    构建 Task7 格式的任务创建 payload (对齐 Rust SDK wire/task.rs TaskProps)。
+    
+    关键字段 (evanpurkhiser/things3-cloud):
+      tt = title
+      tp = task type (0=Todo, 1=Project, 2=Heading)
+      ss = status (0=Incomplete, 2=Canceled, 3=Completed)
+      st = schedule location (0=Inbox, 1=Anytime, 2=Someday)
+      sr = scheduled date (秒级)
+      tir = today index reference date (秒级)
+      dd = deadline (秒级)
+      tg = tag IDs
+      pr = parent project IDs
+      ar = area IDs
+      ix = sort index
+      lt = leaves tombstone
+      tr = trashed
+      icp = instance creation paused
+      sb = evening bit (1=evening, 0=normal)
+      xx = conflict_overrides (CRDT internal, 必带) ← Rust new.rs 强调!
+      cd = creation date (秒级)
+      md = modification date (秒级)
+    """
+    st, sr_ts = _resolve_when(when)
+    now_ts = _things_now()  # 秒级
+
+    # Rust base_new_props 里必带的 conflict_overrides
+    conflict_overrides = {"_t": "oo", "sn": {}}
+
+    payload = {
+        "tt": title,
+        "tp": 0,                 # Todo
+        "ss": SS_PENDING,        # Incomplete
+        "st": st,                # schedule: 0=Inbox, 1=Anytime, 2=Someday
+        "tr": False,
+        "icp": False,
+        "lt": False,
+        "ix": 0,
+        "sb": 0,                 # normal (非 evening)
+        "xx": conflict_overrides,  # ✅ CRDT internals — Rust SDK 必带!
+        "cd": now_ts,
+        "md": now_ts,
+    }
+
+    if notes:
+        payload["nt"] = notes
+
+    if sr_ts is not None:
+        payload["sr"] = int(sr_ts)   # Rust 里是 Option<i64>
+
+    # tir = today reference date (仅 Anytime/Today 需要)
+    if st == ST_ANYTIME:
+        payload["tir"] = int(sr_ts if sr_ts else _date_to_ts(datetime.now().strftime("%Y-%m-%d")))
+
+    if deadline:
+        try:
+            payload["dd"] = float(_date_to_ts(deadline))  # Rust 是 f64
+        except ValueError:
+            pass
+
+    if tags:
+        payload["tg"] = list(tags)
+
+    if project_uuid:
+        payload["pr"] = [project_uuid]
+
+    if area_uuid:
+        payload["ar"] = [area_uuid]
+
+    return payload
+
+
+# 保留旧名作别名, 兼容 app.py 的调用
+build_task6_payload = build_task6_create_payload
+
+
+def build_task6_modify_payload(
+    status: int | None = None,
+    stop_date: float | None = None,
+    md: float | None = None,
+    trashed: bool | None = None,
+    deadline: float | None = None,
+) -> dict:
+    """
+    构建 Task7 modify payload (对齐 Rust SDK TaskPatch)。
+    TaskPatch 所有字段都是 Option, 跳过 None 的 (Rust serde skip_serializing_if = "Option::is_none")。
+    
+    简化版: 只包含我们需要修改的字段。
+    """
+    p = {}
+    if status is not None:
+        p["ss"] = status
+    if stop_date is not None:
+        p["sp"] = stop_date
+    if md is not None:
+        p["md"] = md
+    if trashed is not None:
+        p["tr"] = trashed
+    if deadline is not None:
+        p["dd"] = deadline
+    return p
+
+
+# ============================================================
+# 高层便捷接口
+# ============================================================
+
+class Things:
+    """高层 Things Cloud 操作封装。"""
+
+    def __init__(self, email: str, password: str, history_key: str | None = None):
+        self.client = ThingsClient(email, password)
+        if history_key:
+            self.history_key = history_key
+        else:
+            # 自动获取
+            info = self.client.verify()
+            self.history_key = info["history-key"]
+        self._head_index = None
+        self._tasks = None
+
+    # ---------- 写入 ----------
+
+    def add_task(
+        self,
+        title: str,
+        notes: str | None = None,
+        when: str | None = None,
+        deadline: str | None = None,
+        tags: list[str] | None = None,
+        project_uuid: str | None = None,
+    ) -> str:
+        """
+        添加一个新任务。when 可选值:
+          'inbox'  | 'today' | 'evening' | 'anytime' | 'someday' | 'YYYY-MM-DD' | 'tomorrow'
+        返回新任务的 UUID。
+        """
+        task_uuid = new_uuid()
+        payload = build_task6_payload(
+            title=title, notes=notes, when=when,
+            deadline=deadline, tags=tags, project_uuid=project_uuid,
+        )
+
+        # 获取最新 head index
+        head = self.client.get_history_head(self.history_key)
+        ancestor = head.get("latest-server-index", 0)
+
+        items = [{
+            "uuid": task_uuid,
+            "e": KIND_TASK6,
+            "t": ACTION_CREATED,
+            "p": payload,
+        }]
+        self.client.commit(self.history_key, items, ancestor)
+        # 重置缓存
+        self._head_index = ancestor + 1
+        self._tasks = None
+        return task_uuid
+
+    # ---------- 读取 ----------
+
+    def _maybe_refresh(self):
+        """
+        检查云端有没有新 commit —— 有就增量拉取更新本地缓存。
+        这是"iPhone 上完成的任务, PC 端看不到"的根因修复。
+        """
+        try:
+            head_info = self.client.get_history_head(self.history_key)
+            cloud_head = head_info.get("latest-server-index", 0)
+            if self._head_index is None or cloud_head > self._head_index:
+                # 有新数据 → 增量拉取
+                raw_items, new_head = self.client.sync_history_items(
+                    self.history_key, self._head_index or 0
+                )
+                # 如果是全量 (第一次), 直接重建; 否则增量 merge
+                if self._head_index is None:
+                    self._tasks = _rebuild_state(raw_items)
+                else:
+                    # 增量: 把新 items 合并到旧 state 里重建 (简单可靠)
+                    # 把旧缓存转成原始 items 不方便, 直接全量重建
+                    all_raw, _ = self.client.sync_history_items(self.history_key, 0)
+                    self._tasks = _rebuild_state(all_raw)
+                self._head_index = cloud_head
+        except Exception as e:
+            # 网络错误不影响使用 — 继续用旧缓存
+            import logging
+            logging.getLogger("things").debug(f"增量刷新失败 (离线?): {e}")
+
+    def sync(self) -> list[dict]:
+        """从云端拉取所有任务状态 (从 0 开始重建)。"""
+        raw_items, head = self.client.sync_history_items(self.history_key, 0)
+        self._head_index = head
+        self._tasks = _rebuild_state(raw_items)
+        return self._tasks
+
+    def get_all_tasks(self) -> list[dict]:
+        """获取所有任务 (包括已完成/已删除 —— 供前端全量展示)。"""
+        self._maybe_refresh()
+        if self._tasks is None:
+            self.sync()
+        return list(self._tasks)
+
+    def get_tasks(self, list_name: str = "today", *, keyword: str | None = None) -> list[dict]:
+        """
+        按列表名获取**待办**任务:
+          'all' | 'inbox' | 'today' | 'anytime' | 'someday' | 'upcoming'
+        """
+        self._maybe_refresh()
+        if self._tasks is None:
+            self.sync()
+        return filter_tasks(self._tasks, only_pending=True, list_name=list_name, keyword=keyword)
+
+    def get_completed(self) -> list[dict]:
+        """获取已完成任务。"""
+        self._maybe_refresh()
+        if self._tasks is None:
+            self.sync()
+        return [t for t in self._tasks if t["human_status"] == "completed"]
+
+
+# ============================================================
+# 状态重建 (从 history items 构建当前任务列表)
+# ============================================================
+
+def _rebuild_state(items: list[dict]) -> list[dict]:
+    """
+    将 history items 重建为**完整**的当前任务状态快照。
+    包括所有状态: 待办 / 已完成 / 已取消 / 已删除。
+    """
+    state: dict[str, dict] = {}
+
+    for item in items:
+        try:
+            uuid = item["uuid"]
+            kind = item.get("e", "")
+            action = item.get("t", -1)
+            payload = item.get("p", {})
+
+            # 只处理 Task* 系列 (任务/项目/Heading)
+            if not (kind.startswith("Task") or kind in (KIND_TASK6, KIND_TASK7)):
+                continue
+
+            # payload 可能是非 dict (Fractus 旧格式), 兜底
+            if not isinstance(payload, dict):
+                payload = {}
+
+            if action == ACTION_CREATED or uuid not in state:
+                state[uuid] = {"uuid": uuid, "kind": kind, "p": dict(payload)}
+            elif action == ACTION_MODIFIED:
+                if uuid in state:
+                    state[uuid]["p"].update(payload)
+        except Exception as e:
+            print(f"[rebuild] skip item: {e}")
+            continue
+
+    # 格式化输出 —— 单条坏数据不炸全量
+    result = []
+    for v in state.values():
+        try:
+            result.append(_format_task_full(v))
+        except Exception as e:
+            print(f"[rebuild] format fail {v.get('uuid','?')}: {e}")
+    return result
+
+
+def _format_task_full(raw: dict) -> dict:
+    """把原始 task 格式化成前端友好的 dict。"""
+    p = raw.get("p", {})
+    # 类型映射
+    tp_map = {0: "task", 1: "project", 2: "heading"}
+
+    # schedule 名字
+    st_map = {
+        ST_INBOX: "inbox",
+        ST_ANYTIME: "anytime",
+        ST_SOMEDAY: "someday",
+    }
+
+    # 时间戳 -> 可读日期 (Things Cloud sr/sp/dd 都是"秒"级, 兼容旧代码毫秒)
+    def _ts_to_date(ts):
+        if not ts:
+            return ""
+        try:
+            # 自动识别秒/毫秒: > 1e12 是毫秒, 否则按秒
+            if abs(float(ts)) > 1e12:
+                t = float(ts) / 1000.0
+            else:
+                t = float(ts)
+            return datetime.fromtimestamp(t).strftime("%Y-%m-%d")
+        except Exception:
+            return ""
+
+    # 安全的字符串提取 —— Things Cloud 某些字段在 Fractus 协议下是 dict 或 list
+    def _safe_str(v, default=""):
+        if v is None:
+            return default
+        if isinstance(v, str):
+            return v.strip()
+        if isinstance(v, dict):
+            # 可能是 Fractus 格式 {"o":"text"} 或 {"o":{"c":"..."}}
+            if "o" in v and isinstance(v["o"], str):
+                return v["o"].strip()
+            if "c" in v and isinstance(v["c"], str):
+                return v["c"].strip()
+            # 兜底: 提取所有字符串值
+            out_parts = []
+            for val in v.values():
+                if isinstance(val, str):
+                    out_parts.append(val)
+                elif isinstance(val, dict):
+                    out_parts.append(_safe_str(val))
+            return " ".join(p for p in out_parts if p).strip() or default
+        if isinstance(v, list):
+            return " ".join(
+                _safe_str(i) for i in v if isinstance(i, (str, dict))
+            ).strip() or default
+        return str(v).strip()
+
+    def _safe_int(v, default=0):
+        try:
+            if v is None: return default
+            if isinstance(v, bool): return int(v)
+            return int(v)
+        except Exception:
+            return default
+
+    def _safe_bool(v, default=False):
+        if v is None: return default
+        if isinstance(v, bool): return v
+        if isinstance(v, (int, float)): return bool(v)
+        return default
+
+    def _safe_list(v):
+        if v is None: return []
+        if isinstance(v, list):
+            return [_safe_str(i) if isinstance(i, (str, dict)) else str(i) for i in v]
+        if isinstance(v, dict):
+            # Fractus 格式的 tag 字典, 尝试提取 key
+            return [k for k in v.keys() if isinstance(k, str)]
+        if isinstance(v, str):
+            return [v]
+        return []
+
+    ss = _safe_int(p.get("ss"), SS_PENDING)
+    tr = _safe_bool(p.get("tr"), False)
+    tp = _safe_int(p.get("tp"), 0)
+    st = _safe_int(p.get("st"), ST_INBOX)
+    human_status = "pending" if ss in (SS_PENDING, 0) else (
+        "completed" if ss == SS_COMPLETED else (
+            "canceled" if ss == SS_CANCELED else "pending"
+        )
+    )
+    if tr: human_status = "trashed"
+
+    return {
+        "uuid": raw["uuid"],
+        "kind": raw["kind"],
+        "title": _safe_str(p.get("tt") or p.get("ti"), "(no title)"),
+        "notes": _safe_str(p.get("nt"), ""),
+        "status": ss,
+        "human_status": human_status,
+        "trashed": tr,
+        "type": tp_map.get(tp, "task"),
+        "schedule": st_map.get(st, "inbox"),
+        "st_code": st,
+        "scheduled_ms": p.get("sr"),
+        "scheduled_date": _ts_to_date(p.get("sr")),
+        "deadline_ms": p.get("dd") or p.get("dl"),
+        "deadline_date": _ts_to_date(p.get("dd") or p.get("dl")),
+        "completion_date": _ts_to_date(p.get("sp") or p.get("comd")),
+        "tags": _safe_list(p.get("tg")),
+        "project_uuid": p.get("pr"),
+        "area_uuid": p.get("ar"),
+        "heading_uuid": p.get("hd"),
+        "created_ms": p.get("cd"),
+        "created_date": _ts_to_date(p.get("cd")),
+    }
+
+
+def filter_tasks(tasks: list[dict], *, only_pending: bool = True,
+                 list_name: str | None = None, task_type: str | None = None,
+                 keyword: str | None = None) -> list[dict]:
+    """
+    按 Things 的真实列表逻辑过滤:
+      - inbox:    st=0 (无任何调度)
+      - today:    st=1/2 且 sr ≤ 今天 (含过期任务)
+      - anytime:  st=1 且 (sr 为空 或 sr > 今天)
+      - someday:  st=2 且 sr > 今天
+      - upcoming: 同 someday
+      - all:      不过滤
+    """
+    from datetime import datetime as _dt, timezone as _tz
+
+    # 今天的本地日期 (不含时分秒)
+    now_local = _dt.now()
+    today_midnight = _dt(now_local.year, now_local.month, now_local.day)
+    today_ts = int(today_midnight.timestamp())   # 秒级 (Things Cloud 用秒)
+
+    def _is_today_or_overdue(sr_ms_or_s):
+        """判断一个任务的 sr (秒或毫秒) 是否 <= 今天"""
+        if not sr_ms_or_s:
+            return False
+        try:
+            v = float(sr_ms_or_s)
+            if v > 1e12:
+                v = v / 1000.0
+            return v <= today_ts
+        except Exception:
+            return False
+
+    def _is_scheduled_future(sr_ms_or_s):
+        if not sr_ms_or_s:
+            return False
+        try:
+            v = float(sr_ms_or_s)
+            if v > 1e12:
+                v = v / 1000.0
+            return v > today_ts
+        except Exception:
+            return False
+
+    result = []
+    for t in tasks:
+        if only_pending and t["human_status"] not in ("pending",):
+            continue
+        if task_type and t["type"] != task_type:
+            continue
+
+        if list_name:
+            st = t.get("st_code", 0)
+            sr = t.get("scheduled_ms")
+
+            if list_name == "all":
+                pass
+            elif list_name == "inbox":
+                # Things Inbox = st=0
+                if st != 0:
+                    continue
+            elif list_name == "today":
+                # Things Today = st=1/2 AND sr ≤ 今天 (含过期)
+                if not _is_today_or_overdue(sr):
+                    continue
+            elif list_name == "anytime":
+                # Anytime = st=1 AND (sr 为空 OR sr > 今天)
+                if st != 1:
+                    continue
+                if sr and _is_today_or_overdue(sr):
+                    continue  # 已经进今天了
+            elif list_name in ("someday", "upcoming"):
+                # Someday = st=2 AND sr > 今天
+                if st != 2:
+                    continue
+                if not _is_scheduled_future(sr):
+                    continue
+            elif list_name == "all_scheduled":
+                pass
+            elif list_name == "projects":
+                # Projects: type=project 的待办任务
+                if t.get("type") != "project":
+                    continue
+            elif list_name == "logbook":
+                # Logbook = completed + canceled (不过滤 only_pending)
+                if t["human_status"] not in ("completed", "canceled"):
+                    continue
+            elif list_name == "anytime":
+                # Anytime 独立列表: st=1 且 (sr 为空 或 sr > 今天)
+                if st != 1:
+                    continue
+                if sr and _is_today_or_overdue(sr):
+                    continue
+            else:
+                if t["schedule"] != list_name:
+                    continue
+
+        if keyword:
+            kw = keyword.lower().strip()
+            if kw and kw not in t["title"].lower() and kw not in t["notes"].lower():
+                continue
+        result.append(t)
+
+    # 排序: 最新日期在最上面
+    # (1) 有 scheduled_ms 的按 scheduled_ms 倒序
+    # (2) 无 scheduled_ms 的按 created_ms 倒序 (排在有日期的后面)
+    # (3) 同层级按 uuid (FIFO 稳定)
+    result.sort(key=lambda t: (
+        t.get("scheduled_ms") if t.get("scheduled_ms") is not None else 0,
+        t.get("created_ms") or 0,
+    ), reverse=True)
+    return result
+
+
+# ============================================================
+# 去重逻辑
+# ============================================================
+
+def find_duplicates(tasks: list[dict]) -> dict:
+    """
+    在任务列表里找出所有疑似重复项。
+    返回 {"exact": [...], "similar": [...]}
+    其中每个分组是 [{uuid, title, ...}, ...]
+    """
+    # 只对待办任务去重
+    pending = [t for t in tasks if t["human_status"] == "pending"]
+
+    # 1. 完全相同（标题完全一致）
+    title_map: dict[str, list[dict]] = {}
+    for t in pending:
+        key = t["title"].strip().lower()
+        if len(key) > 0:
+            title_map.setdefault(key, []).append(t)
+
+    exact_groups = [v for v in title_map.values() if len(v) >= 2]
+
+    # 2. 相似标题（去标点/首尾空格后、或关键词高度重叠）
+    def _normalize(s: str) -> str:
+        import re
+        s = s.lower().strip()
+        s = re.sub(r"[，。！？、,.!?·\-—_\s]+", "", s)
+        return s
+
+    norm_map: dict[str, list[dict]] = {}
+    for t in pending:
+        key = _normalize(t["title"])
+        if len(key) > 2:
+            norm_map.setdefault(key, []).append(t)
+
+    norm_groups = [v for v in norm_map.values() if len(v) >= 2]
+
+    # 合并: 完全相同 + 标准化后相同（可能互相重叠，用 exact 优先）
+    seen_uuids: set[str] = set()
+    merged_exact = []
+    for g in exact_groups:
+        uuids = {t["uuid"] for t in g}
+        if not uuids & seen_uuids:
+            merged_exact.append(g)
+            seen_uuids |= uuids
+
+    similar_groups = []
+    for g in norm_groups:
+        uuids = {t["uuid"] for t in g}
+        if not uuids & seen_uuids:
+            similar_groups.append(g)
+            seen_uuids |= uuids
+
+    return {"exact": merged_exact, "similar": similar_groups}
+
+
+def build_dedupe_plan(tasks: list[dict]) -> dict:
+    """
+    生成去重方案 —— 每组选一个保留（最早创建的，假设最早的是原始）。
+    返回:
+      {
+        "groups": [
+          {
+            "type": "exact" | "similar",
+            "keep_uuid": "...",
+            "keep_title": "...",
+            "remove_uuids": [...],
+            "members": [{uuid, title, created_date}, ...]
+          },
+          ...
+        ],
+        "total_duplicates": 5,
+        "groups_count": 3,
+      }
+    """
+    dups = find_duplicates(tasks)
+    plan = {"groups": [], "total_duplicates": 0}
+
+    for gtype, groups in [("exact", dups["exact"]), ("similar", dups["similar"])]:
+        for group in groups:
+            # 按创建时间升序（最早的优先保留）
+            sorted_g = sorted(
+                group,
+                key=lambda t: t.get("created_ms") or 0,
+            )
+            keep = sorted_g[0]
+            remove = sorted_g[1:]
+            plan["groups"].append({
+                "type": gtype,
+                "keep_uuid": keep["uuid"],
+                "keep_title": keep["title"],
+                "remove_uuids": [t["uuid"] for t in remove],
+                "remove_titles": [t["title"] for t in remove],
+                "members": [
+                    {
+                        "uuid": t["uuid"],
+                        "title": t["title"],
+                        "created_date": t.get("created_date", ""),
+                        "schedule": t.get("schedule", ""),
+                    }
+                    for t in sorted_g
+                ],
+            })
+            plan["total_duplicates"] += len(remove)
+
+    plan["groups_count"] = len(plan["groups"])
+    return plan

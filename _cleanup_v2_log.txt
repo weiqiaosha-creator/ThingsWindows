@@ -1,0 +1,3 @@
+2026-10-04 23:37:00,006 INFO [commit] ancestor=2720 items=7 schema=201 appid=com.culturedcode.ThingsMac
+2026-10-04 23:37:00,251 INFO [commit] attempt=1 HTTP=200
+2026-10-04 23:37:00,251 INFO [commit] ✅ 成功 new_head=2721

@@ -108,7 +108,7 @@ def main():
         except Exception:
             continue
 
-    url = f"http://localhost:{actual_port}"
+    url = f"http://localhost:{actual_port}/?v={webapp.VERSION}"
     print(f"[main] ✅ 后端就绪: {url}")
     print("[main] 🪟 打开原生窗口...")
 

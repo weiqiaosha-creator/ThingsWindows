@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Things Windows</title>
-<script src="/static/tailwindcss.js"></script>
-<script src="/static/vue.global.prod.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif; }
   .fade-enter-active, .fade-leave-active { transition: opacity .15s; }
@@ -119,10 +119,41 @@
           {{ loading ? "连接中..." : "连接" }}
         </button>
       </form>
-      <!-- 登录页底部版本号 -->
-      <div class="mt-4 pt-3 border-t border-gray-100 text-center text-[11px] text-gray-400">
-        Things Windows <span class="text-gray-500">v{{ version }}</span>
+      <!-- 内嵌授权区 -->
+      <div class="mt-4 p-4 rounded-lg border"
+        :class="licStatus && licStatus.ok ? 'bg-green-50 border-green-200' : 'bg-gray-50 border-gray-200'">
+        <div class="flex items-center gap-2 mb-3">
+          <span class="w-2 h-2 rounded-full"
+            :class="licStatus && licStatus.ok ? 'bg-green-500' : 'bg-gray-300'"></span>
+          <span class="text-xs font-medium"
+            :class="licStatus && licStatus.ok ? 'text-green-700' : 'text-gray-500'">
+            {{ licStatus && licStatus.ok ? (licStatus.is_permanent ? '✅ 永久授权' : ('✅ 剩余 ' + licStatus.days_remaining + ' 天')) : '🔑 未激活' }}
+          </span>
+          <span v-if="licStatus && licStatus.ok && !licStatus.is_permanent" class="text-[11px] text-green-600 ml-auto">到期: {{ licStatus.expiry_date }}</span>
+        </div>
+        <div class="mb-2">
+          <div class="text-[11px] text-gray-400 mb-1">📋 本机机器码 (自动采集, 发给授权方)</div>
+          <div class="flex gap-2">
+            <input v-model="machineCode"
+              class="flex-1 px-2.5 py-1.5 text-xs font-mono bg-white border border-gray-200 rounded text-gray-600 focus:outline-none focus:border-blue-500" />
+            <button @click="copyMachineCode"
+              class="px-2.5 py-1.5 text-xs rounded border border-gray-200 hover:bg-white text-gray-500">复制</button>
+          </div>
+        </div>
+        <div class="flex gap-2">
+          <input v-model="licKey" placeholder="粘贴授权码..."
+            class="flex-1 px-2.5 py-1.5 text-xs border border-gray-200 rounded focus:outline-none focus:border-blue-500 bg-white" />
+          <button @click="activateLicense" :disabled="licLoading || !licKey"
+            class="px-3 py-1.5 text-xs rounded bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50">
+            {{ licLoading ? '激活中...' : '激活' }}
+          </button>
+        </div>
+        <div v-if="licError" class="text-xs text-red-500 mt-1">{{ licError }}</div>
+        <div v-if="licStatus && licStatus.ok" class="text-right mt-1">
+          <button @click="revokeLicense" class="text-[11px] text-gray-400 hover:text-red-500">撤销授权</button>
+        </div>
       </div>
+
     </div>
   </div>
 
@@ -131,12 +162,12 @@
 
     <!-- 侧边栏 -->
     <aside class="w-56 bg-white border-r border-gray-100 flex flex-col">
-      <div class="p-4 border-b border-gray-100">
-        <div class="flex items-center justify-between mb-1">
-          <div class="text-sm font-semibold text-gray-800">Things Windows</div>
-          <div class="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">v{{ version }}</div>
+      <div class="p-4 border-b border-gray-100 flex items-center justify-between">
+        <div>
+          <div class="text-xs text-gray-400">已连接</div>
+          <div class="text-sm font-medium text-gray-700 truncate" :title="account.email">{{ account.email }}</div>
         </div>
-        <div class="text-xs text-gray-500 truncate" :title="account.email">{{ account.email || '未登录' }}</div>
+        <button @click="logout" title="退出" class="text-gray-400 hover:text-gray-600 text-xs">⎋</button>
       </div>
       <nav class="p-2 flex-1 overflow-y-auto">
         <a v-for="item in sidebar" :key="item.key"
@@ -149,24 +180,6 @@
           </span>
           <span class="text-xs text-gray-400">{{ item.count }}</span>
         </a>
-        <!-- 标签展开入口 -->
-        <a @click="tagsExpanded = !tagsExpanded; if(tagsExpanded) fetchTags()"
-          class="sidebar-item flex items-center justify-between px-3 py-2 rounded-lg text-sm cursor-pointer text-gray-600">
-          <span class="flex items-center gap-2"><span>🏷️</span><span>按标签</span></span>
-          <span class="text-xs text-gray-400">{{ tagsExpanded ? '▲' : '▼' }}</span>
-        </a>
-        <!-- 标签子菜单 -->
-        <div v-if="tagsExpanded && tagsList.length" class="pl-3 pr-1 py-1">
-          <a v-for="tg in tagsList" :key="tg.tag"
-            @click="switchList('tag:' + encodeURIComponent(tg.tag))"
-            class="flex items-center justify-between px-2 py-1 rounded text-xs cursor-pointer text-gray-500 hover:bg-gray-100 hover:text-gray-800"
-            :class="{active: currentList === 'tag:' + encodeURIComponent(tg.tag)}">
-            <span class="truncate">{{ tg.tag }}</span>
-            <span class="text-[10px] text-gray-400 ml-1">{{ tg.count }}</span>
-          </a>
-        </div>
-        <div v-if="tagsExpanded && !tagsList.length" class="px-3 py-1 text-xs text-gray-400">暂无标签</div>
-
         <div class="my-3 border-t border-gray-100"></div>
         <a @click="currentList='dedup'"
           class="sidebar-item flex items-center gap-2 px-3 py-2 rounded-lg text-sm cursor-pointer text-gray-600"
@@ -235,13 +248,13 @@
             </button>
             <div class="flex-1 min-w-0">
               <div class="text-sm truncate" :class="t.human_status === 'completed' ? 'text-gray-400 line-through' : 'text-gray-800'">{{ t.title }}</div>
-              <div class="flex items-center gap-3 mt-0.5 text-[11px] truncate">
-                <span v-if="t.created_date" class="text-gray-400">创建 {{ t.created_date }}</span>
-                <span v-if="t.scheduled_date" class="text-blue-600 font-medium">📅 效期 {{ t.scheduled_date }}</span>
-                <span v-if="t.deadline_date" class="text-orange-600 font-medium">⏰ 截止 {{ t.deadline_date }}</span>
-                <span v-if="t.completion_date" class="text-green-600">✅ 完成 {{ t.completion_date }}</span>
+              <div class="flex items-center gap-2 mt-0.5 text-[11px] text-gray-400 truncate">
+                <span v-if="t.created_date">🆕 {{ t.created_date }}</span>
+                <span v-if="t.scheduled_date">📅 {{ t.scheduled_date }}</span>
+                <span v-if="t.deadline_date">⏰ {{ t.deadline_date }}</span>
+                <span v-if="t.completion_date">✅ {{ t.completion_date }}</span>
                 <span v-if="t.tags && t.tags.length" class="flex">{{ t.tags.slice(0,3).map(tg => `<span class="tag">${tg}</span>`).join('') }}</span>
-                <span v-if="t.notes" class="truncate text-gray-400">📝 {{ t.notes.slice(0,20) }}</span>
+                <span v-if="t.notes" class="truncate">📝 {{ t.notes.slice(0,20) }}</span>
               </div>
             </div>
             <span v-if="t.type === 'project'" class="text-xs px-2 py-0.5 bg-purple-100 text-purple-600 rounded">项目</span>
@@ -488,7 +501,6 @@ createApp({
   setup() {
     const auth = ref(false);
     const account = ref({ email: '' });
-    const version = ref('2.4');  // 后端实际版本, 启动时从 /api/health 拉取
     const form = ref({ email: '', password: '', remember: true, enablePin: false, pin: '' });
     const loginError = ref('');
     const loading = ref(false);
@@ -526,49 +538,29 @@ createApp({
       const s = stats.value;
       return [
         { key: 'inbox',    label: '收件箱',   icon: '📥', count: s.inbox    || 0 },
-        { key: 'today',    label: '今天',     icon: '⭐', count: s.today    || 0 },
-        { key: 'projects', label: '计划',     icon: '📁', count: s.projects || 0 },
+        { key: 'today',    label: '今天',     icon: '☀️', count: s.today    || 0 },
+        { key: 'projects', label: '计划',     icon: '📂', count: s.projects || 0 },
         { key: 'anytime',  label: '随时',     icon: '⏰', count: s.anytime  || 0 },
         { key: 'someday',  label: '某天',     icon: '⏳', count: s.someday  || 0 },
         { key: 'logbook',  label: '日志簿',   icon: '📖', count: s.logbook  || 0 },
         { key: 'all',      label: '全部',     icon: '📋', count: s.all      || 0 },
-        { key: 'trash',    label: '垃圾桶',   icon: '🗑️', count: s.trash    || 0 },
       ];
     });
 
-    // 标签列表 (侧边栏展开用)
-    const tagsList = ref([]);
-    const tagsExpanded = ref(false);
-    async function fetchTags() {
-      try {
-        const r = await API('/api/tags');
-        if (r.ok) tagsList.value = r.tags || [];
-      } catch(e) {}
-    }
+    const currentTitle = computed(() => ({
+      inbox: '收件箱', today: '今天', projects: '计划', anytime: '随时',
+      someday: '某天', all: '全部任务', logbook: '日志簿', dedup: '自动去重',
+    }[currentList.value] || currentList.value));
 
-    const currentTitle = computed(() => {
-      const cl = currentList.value;
-      if (cl.startsWith('tag:')) return '🏷️ ' + decodeURIComponent(cl.slice(4));
-      return ({
-        inbox: '收件箱', today: '今天', projects: '计划', anytime: '随时',
-        someday: '某天', all: '全部任务', logbook: '日志簿', dedup: '自动去重',
-        trash: '垃圾桶', tags: '按标签归类',
-      })[cl] || cl;
-    });
-
-    const currentSubtitle = computed(() => {
-      const cl = currentList.value;
-      if (cl.startsWith('tag:')) return '所有带此标签的任务';
-      return ({
-      inbox: '刚录入的待办事项',
-      today: '今天必须做的事',
-      projects: '有明确目标的大型任务',
-      anytime: '以后任何时候都可以',
+    const currentSubtitle = computed(() => ({
+      inbox: '刚捕获的想法, 还没分类',
+      today: '今天要完成的事',
+      projects: '所有项目分组',
+      anytime: '随时可以做的事',
       someday: '以后再说的事',
       all: '所有待办任务',
       logbook: '已完成 + 已取消',
       dedup: '扫描并清理重复项',
-      trash: '已移到垃圾桶的任务 (30天自动清除)',
     }[currentList.value] || ''));
 
     // ---- 认证 ----
@@ -629,19 +621,11 @@ createApp({
     async function fetchTasks() {
       loading.value = true;
       try {
-        let url;
-        const cl = currentList.value;
-        if (cl.startsWith('tag:')) {
-          // 按标签过滤
-          const tagName = decodeURIComponent(cl.slice(4));
-          url = `/api/tasks?tag=${encodeURIComponent(tagName)}`;
-        } else if (cl === 'completed') {
-          url = '/api/completed';
-        } else if (cl === 'all') {
-          url = '/api/tasks/all';
-        } else {
-          url = `/api/tasks?list=${cl}${searchKeyword.value ? '&q=' + encodeURIComponent(searchKeyword.value) : ''}`;
-        }
+        const url = currentList.value === 'completed'
+          ? '/api/completed'
+          : currentList.value === 'all'
+            ? '/api/tasks/all'
+            : `/api/tasks?list=${currentList.value}${searchKeyword.value ? '&q=' + encodeURIComponent(searchKeyword.value) : ''}`;
         const res = await API(url);
         if (res.ok) tasks.value = res.tasks || [];
       } catch (e) { showToast({ok:false, msg:'加载失败'}); }
@@ -781,14 +765,9 @@ createApp({
     // ---- 初始化 ----
     onMounted(async () => {
       try {
-        // 加载授权状态 (不管登录没登录)
+        // 加载授权状态 + 自动采集机器码 (不管登录没登录)
         fetchLicense();
-
-        // 拉后端版本号
-        try {
-          const h = await API('/api/health');
-          if (h.display_version) version.value = h.display_version;
-        } catch (e) {}
+        fetchMachineCode();
 
         // 先检查有没有记住的账号 (后端会验证设备指纹 + DPAPI)
         const remRes = await API('/api/remembered');
@@ -819,12 +798,10 @@ createApp({
     });
 
     return {
-      auth, account, version, form, loginError, loading, remembered,
+      auth, account, form, loginError, loading, remembered,
       currentList, currentTitle, currentSubtitle, sidebar,
       tasks, searchKeyword, selectedUuid, selectedTask,
       showAddModal, newForm, toast, stats, dedupPlan,
-      // 标签归类
-      tagsList, tagsExpanded, fetchTags,
       // 授权码
       licStatus, machineCode, showLicModal, licKey, licError, licLoading,
       login, logout, auth2fa, removeRemembered, useManualLogin,

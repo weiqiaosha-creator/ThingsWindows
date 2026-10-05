@@ -21,8 +21,8 @@ from urllib.parse import urlparse, parse_qs
 # ============================================================
 # 🔖 版本号 — 只改这里, 保持三处一致
 # ============================================================
-VERSION = "2.4.4"            # 内部版本 (精确到 patch)
-DISPLAY_VERSION = "2.4"      # 用户可见 (只保留前两位, 比如 "2.4" 版)
+VERSION = "2.5.1"            # 内部版本 (精确到 patch)
+DISPLAY_VERSION = "2.5"      # 用户可见 (只保留前两位, 比如 "2.5" 版)
 APP_NAME = "Things Windows"
 
 import auth_store  # noqa: E402  — 安全凭证存储 (DPAPI + 设备指纹 + 2FA)
@@ -146,8 +146,12 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_static(INDEX_HTML, "text/html")
             return
         if path.startswith("/static/"):
-            fname = path[len("/static/"):]  # 直接取文件名, 不要 static/ 前缀
+            fname = path[len("/static/"):]
+            # 源码模式: STATIC_DIR/vue.global.prod.js
+            # PyInstaller: STATIC_DIR/static/vue.global.prod.js (datas 目标是 static/)
             fpath = os.path.join(STATIC_DIR, fname)
+            if not os.path.isfile(fpath):
+                fpath = os.path.join(STATIC_DIR, "static", fname)
             if os.path.isfile(fpath):
                 ext = os.path.splitext(fpath)[1].lower()
                 mime = {".js": "application/javascript", ".css": "text/css",

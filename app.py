@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 Things Windows —— Web 界面后端
 纯标准库 http.server, 无额外依赖。
@@ -21,7 +21,7 @@ from urllib.parse import urlparse, parse_qs
 # ============================================================
 # 🔖 版本号 — 只改这里, 保持三处一致
 # ============================================================
-VERSION = "2.5.1"            # 内部版本 (精确到 patch)
+VERSION = "2.5.2"            # 内部版本 (精确到 patch)
 DISPLAY_VERSION = "2.5"      # 用户可见 (只保留前两位, 比如 "2.5" 版)
 APP_NAME = "Things Windows"
 
@@ -312,6 +312,15 @@ class Handler(BaseHTTPRequestHandler):
                 if not email or not password:
                     self._send_error("邮箱和密码不能为空")
                     return
+                # 授权门禁: 未激活不能登录
+                lic_info = lic.check_local_license()
+                if not lic_info.get("ok"):
+                    self._send_json({
+                        "ok": False,
+                        "error": "请先激活授权码才能使用 (登录页底部授权区输入)",
+                        "license_required": True,
+                    })
+                    return
                 c = ThingsClient(email, password)
                 info = c.verify()
                 with _session_lock:
@@ -338,6 +347,11 @@ class Handler(BaseHTTPRequestHandler):
                 pin = (body.get("pin") or "").strip()
                 if not pin:
                     self._send_error("请输入二次验证密码")
+                    return
+                # 授权门禁
+                lic_info = lic.check_local_license()
+                if not lic_info.get("ok"):
+                    self._send_json({"ok": False, "error": "授权已失效, 请重新激活", "license_required": True})
                     return
                 rec = auth_store.load_credentials()
                 if not rec:
@@ -612,3 +626,4 @@ def main(port: int = DEFAULT_PORT, open_browser: bool = True):
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
     main(port=port)
+

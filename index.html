@@ -26,7 +26,7 @@
 <div id="app" class="h-full">
 
   <!-- 登录页 -->
-  <div v-if="!auth" class="h-full flex items-center justify-center">
+  <div v-if="!auth || !(licStatus && licStatus.ok)" class="h-full flex items-center justify-center">
     <div class="bg-white rounded-2xl shadow-xl p-10 w-[420px] border border-gray-100">
       <div class="text-center mb-8">
         <div class="inline-block w-14 h-14 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 text-white text-2xl font-bold flex items-center justify-center mb-4">T</div>
@@ -118,6 +118,12 @@
           class="w-full py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium disabled:opacity-50">
           {{ loading ? "连接中..." : "连接" }}
         </button>
+        <div class="text-center">
+          <a href="https://culturedcode.com/things/" target="_blank"
+            class="text-xs text-blue-600 hover:text-blue-800 underline">
+            没有 Things Cloud 账号？去 Cultured Code 注册 →
+          </a>
+        </div>
       </form>
       <!-- 内嵌授权区 -->
       <div class="mt-4 p-4 rounded-lg border"

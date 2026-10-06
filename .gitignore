@@ -15,3 +15,6 @@ _*.py
 __pycache__/
 *.pyc
 *.pyo
+
+# 发布归档 (大二进制, 不进 Git)
+releases/

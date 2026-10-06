@@ -197,6 +197,24 @@
           :class="{active: currentList === 'completed'}">
           <span>📜</span><span>已完成</span>
         </a>
+        <!-- 🏷️ 标签分组 -->
+        <div v-if="tags.length" class="my-3 border-t border-gray-100"></div>
+        <div v-if="tags.length" class="px-3 py-1 text-[10px] uppercase text-gray-400 tracking-wider">🏷️ 标签筛选</div>
+        <a v-for="tg in tags" :key="tg.tag"
+          @click="switchTag(tg.tag)"
+          class="sidebar-item flex items-center justify-between px-3 py-1.5 rounded-lg text-xs cursor-pointer text-gray-600"
+          :class="{active: activeTag === tg.tag}">
+          <span class="flex items-center gap-2 truncate">
+            <span>🏷️</span>
+            <span class="truncate">{{ tg.tag }}</span>
+          </span>
+          <span class="text-[10px] text-gray-400">{{ tg.count }}</span>
+        </a>
+        <a v-if="activeTag"
+          @click="switchTag(null)"
+          class="sidebar-item flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs cursor-pointer text-gray-400 hover:text-gray-600">
+          <span>✕</span><span>清除标签筛选</span>
+        </a>
       </nav>
       <!-- 授权状态条 -->
       <div class="p-3 border-t border-gray-100 cursor-pointer hover:bg-gray-50" @click="openLicenseModal">
@@ -241,9 +259,12 @@
           <p>没有待办任务</p>
         </div>
         <div v-else class="divide-y divide-gray-100">
-          <div v-for="t in tasks" :key="t.uuid"
+          <div v-for="t in displayTasks" :key="t.uuid"
             class="task-row px-6 py-3 flex items-center gap-3 cursor-pointer transition-colors"
-            :class="{active: selectedUuid === t.uuid}"
+            :class="[
+              {active: selectedUuid === t.uuid},
+              isPinned(t.uuid) ? 'bg-yellow-50/60 border-l-2 border-yellow-400' : ''
+            ]"
             @click="selectedUuid = t.uuid; selectedTask = t">
             <button @click.stop="toggleComplete(t)"
               class="w-5 h-5 rounded-full border-2 flex items-center justify-center text-xs font-bold"
@@ -253,7 +274,10 @@
               <span v-else class="opacity-0">•</span>
             </button>
             <div class="flex-1 min-w-0">
-              <div class="text-sm truncate" :class="t.human_status === 'completed' ? 'text-gray-400 line-through' : 'text-gray-800'">{{ t.title }}</div>
+              <div class="text-sm truncate" :class="t.human_status === 'completed' ? 'text-gray-400 line-through' : 'text-gray-800'">
+                <span v-if="isPinned(t.uuid)" class="text-yellow-500 mr-1">📌</span>
+                {{ t.title }}
+              </div>
               <div class="flex items-center gap-2 mt-0.5 text-[11px] text-gray-400 truncate">
                 <span v-if="t.created_date">🆕 {{ t.created_date }}</span>
                 <span v-if="t.scheduled_date">📅 {{ t.scheduled_date }}</span>
@@ -384,6 +408,11 @@
           <span class="flex-1 text-green-600 text-xs">✅ {{ selectedTask.completion_date }}</span>
         </div>
         <div class="flex gap-2 pt-4 border-t border-gray-100">
+          <button @click="togglePin(selectedTask.uuid); selectedTask = {...selectedTask}"
+            class="flex-1 text-xs py-2 rounded border"
+            :class="isPinned(selectedTask.uuid) ? 'bg-yellow-100 border-yellow-300 text-yellow-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'">
+            📌 {{ isPinned(selectedTask.uuid) ? '取消置顶' : '置顶' }}
+          </button>
           <button @click="trashSelected" class="flex-1 text-xs py-2 rounded border border-red-200 text-red-500 hover:bg-red-50">🗑️ 移入垃圾桶</button>
         </div>
       </div>
@@ -538,7 +567,8 @@ createApp({
       try {
         const r = await API('/api/stats');
         if (r.ok) stats.value = r.counts || {};
-      } catch(e){}
+      } catch (e) {}
+      fetchTags();
     }
     const sidebar = computed(() => {
       const s = stats.value;
@@ -554,23 +584,30 @@ createApp({
       ];
     });
 
-    const currentTitle = computed(() => ({
-      inbox: '收件箱', today: '今天', projects: '计划', anytime: '随时',
-      someday: '某天', all: '全部任务', logbook: '日志簿', dedup: '自动去重',
-      trash: '垃圾桶',
-    }[currentList.value] || currentList.value));
+    const currentTitle = computed(() => {
+      if (currentList.value.startsWith('tag:')) return `🏷️ ${currentList.value.slice(4)}`;
+      return ({
+        inbox: '收件箱', today: '今天', projects: '计划', anytime: '随时',
+        someday: '某天', all: '全部任务', logbook: '日志簿', dedup: '自动去重',
+        trash: '垃圾桶', completed: '已完成',
+      }[currentList.value] || currentList.value);
+    });
 
-    const currentSubtitle = computed(() => ({
-      inbox: '刚捕获的想法, 还没分类',
-      today: '今天要完成的事',
-      projects: '所有项目分组',
-      anytime: '随时可以做的事',
-      someday: '以后再说的事',
-      all: '所有待办任务',
-      logbook: '已完成 + 已取消',
-      dedup: '扫描并清理重复项',
-      trash: '已移到垃圾桶的任务',
-    }[currentList.value] || ''));
+    const currentSubtitle = computed(() => {
+      if (currentList.value.startsWith('tag:')) return `带标签 "${currentList.value.slice(4)}" 的所有任务`;
+      return ({
+        inbox: '刚捕获的想法, 还没分类',
+        today: '今天要完成的事',
+        projects: '所有项目分组',
+        anytime: '随时可以做的事',
+        someday: '以后再说的事',
+        all: '所有待办任务',
+        logbook: '已完成 + 已取消',
+        dedup: '扫描并清理重复项',
+        trash: '已移到垃圾桶的任务',
+        completed: '已完成的任务',
+      }[currentList.value] || '');
+    });
 
     // ---- 认证 ----
     async function login() {
@@ -630,11 +667,19 @@ createApp({
     async function fetchTasks() {
       loading.value = true;
       try {
-        const url = currentList.value === 'completed'
-          ? '/api/completed'
-          : currentList.value === 'all'
-            ? '/api/tasks/all'
-            : `/api/tasks?list=${currentList.value}${searchKeyword.value ? '&q=' + encodeURIComponent(searchKeyword.value) : ''}`;
+        let url;
+        if (currentList.value.startsWith('tag:')) {
+          const tag = currentList.value.slice(4);
+          activeTag.value = tag;
+          url = `/api/tasks?tag=${encodeURIComponent(tag)}`;
+        } else {
+          activeTag.value = null;
+          url = currentList.value === 'completed'
+            ? '/api/completed'
+            : currentList.value === 'all'
+              ? '/api/tasks/all'
+              : `/api/tasks?list=${currentList.value}${searchKeyword.value ? '&q=' + encodeURIComponent(searchKeyword.value) : ''}`;
+        }
         const res = await API(url);
         if (res.ok) tasks.value = res.tasks || [];
       } catch (e) { showToast({ok:false, msg:'加载失败'}); }
@@ -647,7 +692,42 @@ createApp({
       debounceTimer = setTimeout(fetchTasks, 300);
     }
 
-    function switchList(k) { currentList.value = k; selectedUuid.value = null; selectedTask.value = null; fetchTasks(); }
+    // ---- 置顶 (本地, 不依赖 Things Cloud) ----
+    const pinnedUuids = ref(new Set(JSON.parse(localStorage.getItem('tw_pinned') || '[]')));
+    function savePinned() { localStorage.setItem('tw_pinned', JSON.stringify([...pinnedUuids.value])); }
+    function togglePin(uuid) {
+      if (pinnedUuids.value.has(uuid)) pinnedUuids.value.delete(uuid);
+      else pinnedUuids.value.add(uuid);
+      savePinned();
+      fetchTasks();
+    }
+    const isPinned = (uuid) => pinnedUuids.value.has(uuid);
+
+    // 渲染用: 置顶任务排最前
+    const displayTasks = computed(() => {
+      if (currentList.value === 'trash' || currentList.value.startsWith('tag:')) return tasks.value;
+      const pinned = tasks.value.filter(t => isPinned(t.uuid));
+      const rest = tasks.value.filter(t => !isPinned(t.uuid));
+      return [...pinned, ...rest];
+    });
+
+    // ---- 标签筛选 ----
+    const tags = ref([]);
+    async function fetchTags() {
+      try {
+        const res = await API('/api/tags');
+        if (res.ok) tags.value = res.tags || [];
+      } catch (e) {}
+    }
+    const activeTag = ref(null);
+    function switchTag(tag) {
+      activeTag.value = tag;
+      currentList.value = tag ? `tag:${tag}` : 'today';
+      selectedUuid.value = null; selectedTask.value = null;
+      fetchTasks();
+    }
+
+    function switchList(k) { activeTag.value = null; currentList.value = k; selectedUuid.value = null; selectedTask.value = null; fetchTasks(); }
     async function refresh() { dedupPlan.value = null; await fetchTasks(); showToast({ok:true, msg:'已刷新'}); }
 
     // ---- 任务操作 ----
@@ -818,6 +898,8 @@ createApp({
       addTask, toggleComplete, trashSelected,
       scanDedupe, applyDedupe,
       openLicenseModal, copyMachineCode, activateLicense, revokeLicense,
+      // 置顶 & 标签
+      pinnedUuids, togglePin, isPinned, displayTasks, tags, activeTag, switchTag,
     };
   }
 }).mount('#app');

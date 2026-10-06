@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 Things Windows —— Web 界面后端
 纯标准库 http.server, 无额外依赖。
@@ -21,7 +21,7 @@ from urllib.parse import urlparse, parse_qs
 # ============================================================
 # 🔖 版本号 — 只改这里, 保持三处一致
 # ============================================================
-VERSION = "2.5.2"            # 内部版本 (精确到 patch)
+VERSION = "2.5.3"            # 内部版本 (精确到 patch)
 DISPLAY_VERSION = "2.5"      # 用户可见 (只保留前两位, 比如 "2.5" 版)
 APP_NAME = "Things Windows"
 

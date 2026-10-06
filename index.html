@@ -550,12 +550,14 @@ createApp({
         { key: 'someday',  label: '某天',     icon: '⏳', count: s.someday  || 0 },
         { key: 'logbook',  label: '日志簿',   icon: '📖', count: s.logbook  || 0 },
         { key: 'all',      label: '全部',     icon: '📋', count: s.all      || 0 },
+        { key: 'trash',    label: '垃圾桶',   icon: '🗑️', count: s.trash    || 0 },
       ];
     });
 
     const currentTitle = computed(() => ({
       inbox: '收件箱', today: '今天', projects: '计划', anytime: '随时',
       someday: '某天', all: '全部任务', logbook: '日志簿', dedup: '自动去重',
+      trash: '垃圾桶',
     }[currentList.value] || currentList.value));
 
     const currentSubtitle = computed(() => ({
@@ -567,6 +569,7 @@ createApp({
       all: '所有待办任务',
       logbook: '已完成 + 已取消',
       dedup: '扫描并清理重复项',
+      trash: '已移到垃圾桶的任务',
     }[currentList.value] || ''));
 
     // ---- 认证 ----

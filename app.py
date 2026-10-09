@@ -21,8 +21,8 @@ from urllib.parse import urlparse, parse_qs
 # ============================================================
 # 🔖 版本号 — 只改这里, 保持三处一致
 # ============================================================
-VERSION = "2.5.7"            # 内部版本 (精确到 patch)
-DISPLAY_VERSION = "2.5"      # 用户可见 (只保留前两位, 比如 "2.5" 版) — v2.5.7: 备注/标签/效期编辑
+VERSION = "2.5.8"            # 内部版本 (精确到 patch)
+DISPLAY_VERSION = "2.5"      # 用户可见 (只保留前两位, 比如 "2.5" 版) — v2.5.8: 状态编辑 bug 修复 + 圆圈弹窗
 APP_NAME = "Things Windows"
 
 import auth_store  # noqa: E402  — 安全凭证存储 (DPAPI + 设备指纹 + 2FA)
@@ -77,6 +77,7 @@ from things_cloud import (  # noqa: E402
     new_uuid,
     ACTION_CREATED,
     SS_COMPLETED,
+    SS_CANCELED,
     SS_PENDING,
 )
 
@@ -423,12 +424,28 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, "uuid": uuid})
 
             elif path == "/api/tasks/complete":
+                # 兼容旧端点 — 硬编码设为 completed
                 t = _get_things()
                 uuid = body.get("uuid", "")
                 if not uuid:
                     self._send_error("需要 uuid")
                     return
                 ok = mark_task_status(t, uuid, SS_COMPLETED)
+                self._send_json({"ok": ok})
+
+            elif path == "/api/tasks/status":
+                # v2.5.8: 通用状态端点 — pending/completed/canceled
+                t = _get_things()
+                uuid = body.get("uuid", "")
+                status_str = (body.get("status") or "").lower().strip()
+                if not uuid:
+                    self._send_error("需要 uuid")
+                    return
+                status_map = {"pending": SS_PENDING, "completed": SS_COMPLETED, "canceled": SS_CANCELED}
+                if status_str not in status_map:
+                    self._send_error(f"status 必须是 {list(status_map.keys())} 之一")
+                    return
+                ok = mark_task_status(t, uuid, status_map[status_str])
                 self._send_json({"ok": ok})
 
             elif path == "/api/tasks/trash":

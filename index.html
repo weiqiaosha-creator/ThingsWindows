@@ -266,13 +266,35 @@
               isPinned(t.uuid) ? 'bg-yellow-50/60 border-l-2 border-yellow-400' : ''
             ]"
             @click="selectedUuid = t.uuid; selectedTask = t">
-            <button @click.stop="toggleComplete(t)"
-              class="w-5 h-5 rounded-full border-2 flex items-center justify-center text-xs font-bold"
-              :class="t.human_status === 'completed' ? 'bg-green-500 border-green-500 text-white' : t.human_status === 'canceled' ? 'bg-gray-300 border-gray-300 text-gray-600' : 'border-gray-300 hover:border-blue-500'">
-              <span v-if="t.human_status === 'completed'">✓</span>
-              <span v-else-if="t.human_status === 'canceled'">✕</span>
-              <span v-else class="opacity-0">•</span>
-            </button>
+            <div class="relative" @click.stop>
+              <button @click.stop="openStatusPopover(t)"
+                class="w-5 h-5 rounded-full border-2 flex items-center justify-center text-xs font-bold"
+                :class="t.human_status === 'completed' ? 'bg-green-500 border-green-500 text-white' : t.human_status === 'canceled' ? 'bg-gray-300 border-gray-300 text-gray-600' : 'border-gray-300 hover:border-blue-500'">
+                <span v-if="t.human_status === 'completed'">✓</span>
+                <span v-else-if="t.human_status === 'canceled'">✕</span>
+                <span v-else class="opacity-0">•</span>
+              </button>
+              <!-- 状态 popover -->
+              <div v-if="statusPopoverUuid === t.uuid"
+                class="absolute left-7 top-0 z-30 bg-white rounded-lg shadow-xl border border-gray-100 py-1 min-w-[120px] text-xs"
+                @click.stop>
+                <button @click="setStatus(t, 'pending')"
+                  class="w-full text-left px-3 py-1.5 hover:bg-gray-50 flex items-center gap-2"
+                  :class="t.human_status==='pending'?'text-blue-600':''">
+                  ⚪ 待办
+                </button>
+                <button @click="setStatus(t, 'completed')"
+                  class="w-full text-left px-3 py-1.5 hover:bg-gray-50 flex items-center gap-2"
+                  :class="t.human_status==='completed'?'text-green-600':'text-gray-700'">
+                  ✓ 已完成
+                </button>
+                <button @click="setStatus(t, 'canceled')"
+                  class="w-full text-left px-3 py-1.5 hover:bg-gray-50 flex items-center gap-2"
+                  :class="t.human_status==='canceled'?'text-gray-500':'text-gray-700'">
+                  ✕ 已取消
+                </button>
+              </div>
+            </div>
             <div class="flex-1 min-w-0">
               <div class="text-sm truncate" :class="t.human_status === 'completed' ? 'text-gray-400 line-through' : 'text-gray-800'">
                 <span v-if="isPinned(t.uuid)" class="text-yellow-500 mr-1">📌</span>
@@ -773,12 +795,31 @@ createApp({
       }
     }
 
-    async function toggleComplete(t) {
-      const newStatus = t.human_status === 'completed' ? 0 : 3;
-      // 简单实现: 点选后刷新
-      const res = await API('/api/tasks/complete', { method: 'POST', body: JSON.stringify({ uuid: t.uuid }) });
-      if (res.ok) { showToast({ok:true, msg:'✅ 已完成'}); fetchTasks(); }
-      else showToast({ok:false, msg: res.error||'操作失败'});
+    // v2.5.8: 状态 popover (圆圈点击弹出 3 选 1)
+    const statusPopoverUuid = ref(null);
+    function openStatusPopover(t) {
+      // 同一个任务: 关闭; 不同任务: 打开新的
+      statusPopoverUuid.value = statusPopoverUuid.value === t.uuid ? null : t.uuid;
+    }
+    // 点任意非 popover 区域关闭
+    onMounted(() => document.addEventListener('click', () => statusPopoverUuid.value = null));
+    onUnmounted(() => document.removeEventListener('click', () => statusPopoverUuid.value = null));
+
+    async function setStatus(t, newHumanStatus) {
+      const label = {pending:'⚪ 待办', completed:'✓ 已完成', canceled:'✕ 已取消'}[newHumanStatus];
+      const res = await API('/api/tasks/status', { method: 'POST', body: JSON.stringify({ uuid: t.uuid, status: newHumanStatus }) });
+      statusPopoverUuid.value = null;
+      if (res.ok) {
+        showToast({ok:true, msg:`✅ ${label}`});
+        await fetchTasks();
+        // 如果这个任务也在详情面板里, 同步更新
+        if (selectedTask.value && selectedTask.value.uuid === t.uuid) {
+          const fresh = tasks.value.find(x => x.uuid === t.uuid);
+          if (fresh) selectedTask.value = fresh;
+        }
+      } else {
+        showToast({ok:false, msg: res.error || '状态更新失败'});
+      }
     }
 
     async function trashSelected() {
@@ -882,19 +923,16 @@ createApp({
 
     async function quickModifyStatus() {
       if (!selectedTask.value) return;
-      const human = selectedTask.value.human_status;
-      const apiPath = human === 'completed' || human === 'canceled'
-        ? '/api/tasks/complete'    // 完成 / 取消 都用 complete 端点 (后端 toggle 或看 status)
-        : '/api/tasks/pending';
-      const res = await API(apiPath, { method: 'POST', body: JSON.stringify({ uuid: selectedTask.value.uuid }) });
+      const newStatus = selectedTask.value.human_status;  // 下拉选啥就是啥
+      const res = await API('/api/tasks/status', { method: 'POST', body: JSON.stringify({ uuid: selectedTask.value.uuid, status: newStatus }) });
       if (res.ok) {
-        showToast({ok:true, msg:'✅ 状态已更新'});
+        const label = {pending:'⚪ 待办', completed:'✓ 已完成', canceled:'✕ 已取消'}[newStatus];
+        showToast({ok:true, msg:`✅ ${label}`});
         await fetchTasks();
         const fresh = tasks.value.find(t => t.uuid === selectedTask.value.uuid);
         if (fresh) selectedTask.value = fresh;
       } else {
-        // 兜底: 状态用 complete → 其实后端只有 complete toggle, 直接整页刷新
-        showToast({ok:false, msg: res.error || '状态切换失败'});
+        showToast({ok:false, msg: res.error || '状态更新失败'});
       }
     }
 
@@ -1024,13 +1062,14 @@ createApp({
       licStatus, machineCode, showLicModal, licKey, licError, licLoading,
       login, logout, auth2fa, removeRemembered, useManualLogin,
       fetchTasks, debouncedFetch, switchList, refresh,
-      addTask, toggleComplete, trashSelected, moveSelected,
+      addTask, trashSelected, moveSelected,
       scanDedupe, applyDedupe,
       openLicenseModal, copyMachineCode, activateLicense, revokeLicense,
       // 置顶 & 标签
       pinnedUuids, togglePin, isPinned, displayTasks, tags, activeTag, switchTag,
-      // v2.5.7 详情面板字段编辑
+      // v2.5.7/v2.5.8 详情面板 + 状态编辑
       tagInput, ddInput, quickModify, clearDeadline, quickModifyStatus,
+      statusPopoverUuid, openStatusPopover, setStatus,
     };
   }
 }).mount('#app');

@@ -21,8 +21,8 @@ from urllib.parse import urlparse, parse_qs
 # ============================================================
 # 🔖 版本号 — 只改这里, 保持三处一致
 # ============================================================
-VERSION = "2.5.6"            # 内部版本 (精确到 patch)
-DISPLAY_VERSION = "2.5"      # 用户可见 (只保留前两位, 比如 "2.5" 版) — v2.5.6: 标签中文名修复 + 跨分类移动
+VERSION = "2.5.7"            # 内部版本 (精确到 patch)
+DISPLAY_VERSION = "2.5"      # 用户可见 (只保留前两位, 比如 "2.5" 版) — v2.5.7: 备注/标签/效期编辑
 APP_NAME = "Things Windows"
 
 import auth_store  # noqa: E402  — 安全凭证存储 (DPAPI + 设备指纹 + 2FA)
@@ -454,6 +454,23 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError as e:
                     self._send_error(str(e))
 
+            elif path == "/api/tasks/modify":
+                # v2.5.7: 通用字段修改 (标题/备注/标签/效期)
+                t = _get_things()
+                uuid = body.get("uuid", "")
+                fields = body.get("fields", {}) or body
+                # 兼容两种传法: {uuid, fields: {...}} 或 {uuid, tt, nt, tg, dd}
+                if "fields" not in body and isinstance(fields, dict):
+                    fields = {k: v for k, v in body.items() if k not in ("uuid",)}
+                if not uuid:
+                    self._send_error("需要 uuid")
+                    return
+                try:
+                    result = modify_task_fields(t, uuid, fields)
+                    self._send_json(result)
+                except ValueError as e:
+                    self._send_error(str(e))
+
             elif path == "/api/dedupe/apply":
                 t = _get_things()
                 remove_uuids = body.get("remove_uuids", [])
@@ -593,6 +610,146 @@ def trash_tasks_batch(things: Things, uuids: list[str]) -> int:
     if things._tasks is not None:
         things._tasks = [t for t in things._tasks if t.get("uuid") not in uuids]
     return len(uuids)
+
+
+# ============================================================
+# v2.5.7: 通用任务字段修改 (标题/备注/标签/效期)
+# ============================================================
+
+def _get_reverse_tag_map(things) -> dict[str, str]:
+    """
+    扫描 Things Cloud 原始条目, 构建 {中文名: Tag4 uuid} 反向映射。
+    用于前端传入中文名 → 后端转 UUID 写回 Task6.tg。
+    """
+    try:
+        raw, _ = things.client.sync_history_items(things.history_key, 0)
+        rev = {}
+        for item in raw:
+            if item.get("e") == "Tag4":
+                p = item.get("p", {})
+                name = p.get("tt") or p.get("ti") or ""
+                if name:
+                    rev[name] = item["uuid"]
+        return rev
+    except Exception:
+        return {}
+
+
+def modify_task_fields(things: Things, uuid: str, fields: dict) -> dict:
+    """
+    通用 Task6 字段修改。fields 可包含:
+      tt       → 标题 (str)
+      nt       → 备注 (str)
+      tg       → 标签 (list[str], 中文名, 空列表=清空标签)
+      dd       → 效期 (str YYYY-MM-DD | None=清空 | ""=清空)
+    返回 {ok: bool, changed: list[str]}
+    """
+    from things_cloud import _things_now, _date_to_ts
+
+    if not fields:
+        return {"ok": False, "changed": []}
+
+    if things._head_index is None:
+        head = things.client.get_history_head(things.history_key)
+        things._head_index = head.get("latest-server-index", 0)
+    ancestor = things._head_index
+    now_ts = _things_now()
+
+    p: dict = {"md": now_ts}
+
+    changed = []
+
+    # 标题
+    if "tt" in fields:
+        val = (fields["tt"] or "").strip()
+        if val:
+            p["tt"] = val
+            p["ti"] = val   # 双写, Things Cloud 兼容
+            changed.append("title")
+
+    # 备注
+    if "nt" in fields:
+        val = fields["nt"] or ""
+        p["nt"] = val
+        changed.append("notes")
+
+    # 标签 (中文名列表 → UUID 列表)
+    if "tg" in fields:
+        names = fields["tg"] or []
+        rev = _get_reverse_tag_map(things)
+        uuid_list = []
+        not_found = []
+        for name in names:
+            name = (name or "").strip()
+            if not name:
+                continue
+            if name in rev:
+                uuid_list.append(rev[name])
+            else:
+                not_found.append(name)
+        p["tg"] = uuid_list
+        changed.append("tags")
+        # 未知标签不阻塞, 但记日志
+        if not_found:
+            print(f"[modify] 未匹配到 Tag4: {not_found}")
+
+    # 效期
+    if "dd" in fields:
+        val = fields["dd"]
+        if not val:
+            # 清空效期 → 用 0 (或直接不写 p)
+            # Things Cloud Task6 修改, 不写 dd 即保留原值; 写 0 表示清空
+            p["dd"] = 0
+            changed.append("deadline")
+        else:
+            try:
+                ts = _date_to_ts(str(val).strip())
+                p["dd"] = ts
+                changed.append("deadline")
+            except Exception:
+                raise ValueError(f"效期格式错误, 需 YYYY-MM-DD: {val}")
+
+    if len(p) == 1 and "md" in p:
+        # 只有 md → 没改东西
+        return {"ok": True, "changed": []}
+
+    item = {"uuid": uuid, "e": "Task6", "t": 1, "p": p}
+    new_head = things.client.commit(things.history_key, [item], ancestor)
+    things._head_index = new_head
+
+    # 即时更新本地缓存
+    t = _cache_lookup(things, uuid)
+    if t is not None:
+        if "tt" in p:
+            t["title"] = p["tt"]
+        if "nt" in p:
+            t["notes"] = p.get("nt", "")
+        if "tg" in p:
+            # 反向还原: UUID→中文名
+            raw2, _ = things.client.sync_history_items(things.history_key, 0)
+            tag_map = {}
+            for it in raw2:
+                if it.get("e") == "Tag4":
+                    name = (it.get("p") or {}).get("tt") or ""
+                    if name:
+                        tag_map[it["uuid"]] = name
+            t["tags"] = [tag_map.get(u, u) for u in p["tg"]]
+        if "dd" in p:
+            if p["dd"]:
+                t["deadline_ms"] = p["dd"]
+                try:
+                    from datetime import datetime as _dt
+                    if abs(float(p["dd"])) > 1e12:
+                        t["deadline_date"] = _dt.fromtimestamp(float(p["dd"]) / 1000).strftime("%Y-%m-%d")
+                    else:
+                        t["deadline_date"] = _dt.fromtimestamp(float(p["dd"])).strftime("%Y-%m-%d")
+                except Exception:
+                    pass
+            else:
+                t["deadline_ms"] = None
+                t["deadline_date"] = ""
+
+    return {"ok": True, "changed": changed}
 
 
 def move_task_schedule(things: Things, uuid: str, target: str) -> bool:

@@ -367,12 +367,12 @@
         <span class="text-xs text-gray-400">任务详情</span>
         <button @click="selectedUuid=null; selectedTask=null" class="text-gray-400 hover:text-gray-600">✕</button>
       </div>
-      <textarea v-model="selectedTask.title" @blur="quickUpdate"
+      <textarea v-model="selectedTask.title" @blur="quickModify('tt')"
         class="w-full text-lg font-medium text-gray-800 bg-transparent border-none resize-none focus:outline-none" rows="2"></textarea>
       <div class="mt-4 space-y-3 text-sm">
         <div class="flex items-start gap-2">
           <span class="w-14 text-gray-400 shrink-0">状态</span>
-          <select v-model="selectedTask.human_status" @change="quickUpdateStatus"
+          <select v-model="selectedTask.human_status" @change="quickModifyStatus"
             class="flex-1 px-2 py-1 border border-gray-200 rounded">
             <option value="pending">待办</option>
             <option value="completed">已完成</option>
@@ -397,23 +397,33 @@
         </div>
         <div class="flex items-start gap-2">
           <span class="w-14 text-gray-400 shrink-0">备注</span>
-          <div class="flex-1 whitespace-pre-wrap text-gray-600">{{ selectedTask.notes || '—' }}</div>
+          <textarea v-model="selectedTask.notes" @blur="quickModify('nt')"
+            class="flex-1 text-gray-600 bg-transparent border border-gray-200 rounded px-2 py-1 resize-none focus:outline-none focus:border-blue-400 text-xs"
+            rows="3" placeholder="点这里写备注..."></textarea>
         </div>
         <div class="flex items-start gap-2">
           <span class="w-14 text-gray-400 shrink-0">标签</span>
-          <div class="flex-1">{{ (selectedTask.tags||[]).map(t=>`<span class="tag">${t}</span>`).join('') || '—' }}</div>
+          <div class="flex-1">
+            <div class="flex flex-wrap gap-1 mb-1" v-if="(selectedTask.tags||[]).length">
+              <span v-for="tg in selectedTask.tags" :key="tg" class="tag">{{ tg }}</span>
+            </div>
+            <input v-model="tagInput" @blur="quickModify('tg')" @keyup.enter="quickModify('tg')"
+              placeholder="逗号分隔, 如: 工作,办公,重要"
+              class="w-full text-xs px-2 py-1 border border-gray-200 rounded focus:outline-none focus:border-blue-400" />
+          </div>
         </div>
         <div class="flex items-start gap-2">
           <span class="w-14 text-gray-400 shrink-0">创建</span>
           <span class="flex-1 text-gray-600 text-xs">{{ selectedTask.created_date }}</span>
         </div>
-        <div class="flex items-start gap-2" v-if="selectedTask.scheduled_date">
+        <div class="flex items-start gap-2">
           <span class="w-14 text-gray-400 shrink-0">效期</span>
-          <span class="flex-1 text-blue-600 text-xs">📅 {{ selectedTask.scheduled_date }}</span>
-        </div>
-        <div class="flex items-start gap-2" v-if="selectedTask.deadline_date">
-          <span class="w-14 text-gray-400 shrink-0">截止</span>
-          <span class="flex-1 text-orange-600 text-xs">⏰ {{ selectedTask.deadline_date }}</span>
+          <div class="flex-1 flex items-center gap-2">
+            <input type="date" v-model="ddInput" @change="quickModify('dd')"
+              class="flex-1 text-xs px-2 py-1 border border-gray-200 rounded focus:outline-none focus:border-blue-400" />
+            <button v-if="selectedTask.deadline_date" @click="clearDeadline"
+              class="text-[11px] text-gray-400 hover:text-red-500 px-2 py-1">清除</button>
+          </div>
         </div>
         <div class="flex items-start gap-2" v-if="selectedTask.completion_date">
           <span class="w-14 text-gray-400 shrink-0">完成</span>
@@ -540,7 +550,7 @@
 </div>
 
 <script>
-const { createApp, ref, computed, onMounted, onUnmounted } = Vue;
+const { createApp, ref, computed, watch, onMounted, onUnmounted } = Vue;
 
 const API = (path, opts = {}) => fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts }).then(r => r.json());
 
@@ -798,6 +808,96 @@ createApp({
       }
     }
 
+    // v2.5.7: 详情面板字段编辑 —— tagInput / ddInput 与 selectedTask 双向同步
+    const tagInput = ref('');
+    const ddInput = ref('');
+    // 选中新任务时, 同步标签串和效期
+    watch(selectedTask, (t) => {
+      if (t) {
+        tagInput.value = (t.tags || []).join(', ');
+        ddInput.value = t.deadline_date || '';
+      } else {
+        tagInput.value = '';
+        ddInput.value = '';
+      }
+    });
+
+    // v2.5.7: 通用字段修改 handler
+    let modifyDebounce = {};
+    async function quickModify(field) {
+      if (!selectedTask.value) return;
+      clearTimeout(modifyDebounce[field]);
+      modifyDebounce[field] = setTimeout(async () => {
+        const body = { uuid: selectedTask.value.uuid };
+        if (field === 'tt') body.tt = (selectedTask.value.title || '').trim();
+        else if (field === 'nt') body.nt = selectedTask.value.notes || '';
+        else if (field === 'tg') {
+          body.tg = tagInput.value.split(',').map(s => s.trim()).filter(Boolean);
+        } else if (field === 'dd') {
+          body.dd = ddInput.value || null;
+        }
+        // 若字段实际未变, 跳过
+        if (field === 'tg') {
+          const old = (selectedTask.value.tags || []).join(',');
+          const now = (body.tg || []).join(',');
+          if (old === now) return;
+        }
+        if (field === 'dd' && (selectedTask.value.deadline_date || '') === (body.dd || '')) return;
+        const res = await API('/api/tasks/modify', { method: 'POST', body: JSON.stringify(body) });
+        if (res.ok) {
+          // 本地即时刷新, 不整页 fetchTasks (保留用户滚动位置)
+          const updated = { ...selectedTask.value };
+          if (field === 'tt') updated.title = body.tt;
+          if (field === 'nt') updated.notes = body.nt;
+          if (field === 'tg') updated.tags = body.tg;
+          if (field === 'dd') {
+            if (body.dd) {
+              updated.deadline_date = body.dd;
+              updated.deadline_ms = 0;
+            } else {
+              updated.deadline_date = '';
+              updated.deadline_ms = null;
+            }
+          }
+          selectedTask.value = updated;
+          await fetchTasks();
+          // 重新同步 tagInput/ddInput (防 commit 后后端微调)
+          const fresh = tasks.value.find(t => t.uuid === updated.uuid);
+          if (fresh) {
+            selectedTask.value = fresh;
+            tagInput.value = (fresh.tags || []).join(', ');
+            ddInput.value = fresh.deadline_date || '';
+          }
+          showToast({ok:true, msg:'✅ 已更新'});
+        } else {
+          showToast({ok:false, msg: res.error || '保存失败'});
+        }
+      }, 150);
+    }
+
+    async function clearDeadline() {
+      ddInput.value = '';
+      await quickModify('dd');
+    }
+
+    async function quickModifyStatus() {
+      if (!selectedTask.value) return;
+      const human = selectedTask.value.human_status;
+      const apiPath = human === 'completed' || human === 'canceled'
+        ? '/api/tasks/complete'    // 完成 / 取消 都用 complete 端点 (后端 toggle 或看 status)
+        : '/api/tasks/pending';
+      const res = await API(apiPath, { method: 'POST', body: JSON.stringify({ uuid: selectedTask.value.uuid }) });
+      if (res.ok) {
+        showToast({ok:true, msg:'✅ 状态已更新'});
+        await fetchTasks();
+        const fresh = tasks.value.find(t => t.uuid === selectedTask.value.uuid);
+        if (fresh) selectedTask.value = fresh;
+      } else {
+        // 兜底: 状态用 complete → 其实后端只有 complete toggle, 直接整页刷新
+        showToast({ok:false, msg: res.error || '状态切换失败'});
+      }
+    }
+
     // ---- 去重 ----
     async function scanDedupe() {
       loading.value = true;
@@ -929,6 +1029,8 @@ createApp({
       openLicenseModal, copyMachineCode, activateLicense, revokeLicense,
       // 置顶 & 标签
       pinnedUuids, togglePin, isPinned, displayTasks, tags, activeTag, switchTag,
+      // v2.5.7 详情面板字段编辑
+      tagInput, ddInput, quickModify, clearDeadline, quickModifyStatus,
     };
   }
 }).mount('#app');

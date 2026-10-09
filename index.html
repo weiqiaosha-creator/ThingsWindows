@@ -380,8 +380,20 @@
           </select>
         </div>
         <div class="flex items-start gap-2">
-          <span class="w-14 text-gray-400 shrink-0">时间</span>
+          <span class="w-14 text-gray-400 shrink-0">分类</span>
           <span class="flex-1 text-gray-700">{{ {inbox:'收件箱',anytime:'今日/随时',someday:'某天/以后'}[selectedTask.schedule] || selectedTask.schedule }}</span>
+        </div>
+        <!-- 🆕 跨分类移动按钮组 -->
+        <div class="flex items-start gap-2">
+          <span class="w-14 text-gray-400 shrink-0"></span>
+          <div class="flex-1 flex flex-wrap gap-1">
+            <button v-for="m in ['inbox','today','tomorrow','anytime','someday']" :key="m"
+              @click="moveSelected(m)"
+              class="px-2 py-0.5 text-[11px] rounded border transition"
+              :class="selectedTask.schedule === ({inbox:'inbox',today:'anytime',tomorrow:'someday',anytime:'anytime',someday:'someday'}[m]) ? 'bg-blue-100 border-blue-300 text-blue-700' : 'border-gray-200 text-gray-500 hover:bg-blue-50 hover:text-blue-600'">
+              {{ {inbox:'📥收件箱',today:'📅今天',tomorrow:'⏰明天',anytime:'📆随时',someday:'📋以后'}[m] }}
+            </button>
+          </div>
         </div>
         <div class="flex items-start gap-2">
           <span class="w-14 text-gray-400 shrink-0">备注</span>
@@ -769,6 +781,23 @@ createApp({
       }
     }
 
+    // 🆕 跨分类移动
+    async function moveSelected(target) {
+      if (!selectedTask.value) return;
+      const label = {inbox:'📥收件箱',today:'📅今天',tomorrow:'⏰明天',anytime:'📆随时',someday:'📋以后'}[target] || target;
+      const res = await API('/api/tasks/move', { method: 'POST', body: JSON.stringify({ uuid: selectedTask.value.uuid, target }) });
+      if (res.ok) {
+        showToast({ok:true, msg:`✅ 已移动到 ${label}`});
+        // 刷新 tasks 列表 + 更新 selectedTask 的本地显示
+        await fetchTasks();
+        // 从新 tasks 列表里找同 uuid 的最新版本
+        const fresh = tasks.value.find(t => t.uuid === selectedTask.value.uuid);
+        if (fresh) selectedTask.value = fresh;
+      } else {
+        showToast({ok:false, msg: res.error || '移动失败'});
+      }
+    }
+
     // ---- 去重 ----
     async function scanDedupe() {
       loading.value = true;
@@ -895,7 +924,7 @@ createApp({
       licStatus, machineCode, showLicModal, licKey, licError, licLoading,
       login, logout, auth2fa, removeRemembered, useManualLogin,
       fetchTasks, debouncedFetch, switchList, refresh,
-      addTask, toggleComplete, trashSelected,
+      addTask, toggleComplete, trashSelected, moveSelected,
       scanDedupe, applyDedupe,
       openLicenseModal, copyMachineCode, activateLicense, revokeLicense,
       // 置顶 & 标签

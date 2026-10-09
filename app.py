@@ -21,8 +21,8 @@ from urllib.parse import urlparse, parse_qs
 # ============================================================
 # 🔖 版本号 — 只改这里, 保持三处一致
 # ============================================================
-VERSION = "2.5.5"            # 内部版本 (精确到 patch)
-DISPLAY_VERSION = "2.5"      # 用户可见 (只保留前两位, 比如 "2.5" 版)
+VERSION = "2.5.6"            # 内部版本 (精确到 patch)
+DISPLAY_VERSION = "2.5"      # 用户可见 (只保留前两位, 比如 "2.5" 版) — v2.5.6: 标签中文名修复 + 跨分类移动
 APP_NAME = "Things Windows"
 
 import auth_store  # noqa: E402  — 安全凭证存储 (DPAPI + 设备指纹 + 2FA)
@@ -440,6 +440,20 @@ class Handler(BaseHTTPRequestHandler):
                 ok = trash_task(t, uuid)
                 self._send_json({"ok": ok})
 
+            elif path == "/api/tasks/move":
+                # 任务跨分类移动 (改 st/sr)
+                t = _get_things()
+                uuid = body.get("uuid", "")
+                target = body.get("target", "inbox")
+                if not uuid:
+                    self._send_error("需要 uuid")
+                    return
+                try:
+                    ok = move_task_schedule(t, uuid, target)
+                    self._send_json({"ok": ok})
+                except ValueError as e:
+                    self._send_error(str(e))
+
             elif path == "/api/dedupe/apply":
                 t = _get_things()
                 remove_uuids = body.get("remove_uuids", [])
@@ -579,6 +593,85 @@ def trash_tasks_batch(things: Things, uuids: list[str]) -> int:
     if things._tasks is not None:
         things._tasks = [t for t in things._tasks if t.get("uuid") not in uuids]
     return len(uuids)
+
+
+def move_task_schedule(things: Things, uuid: str, target: str) -> bool:
+    """
+    修改任务的调度 (st + sr), 实现"移动分类"。
+    target 可选值:
+      'inbox'       → st=0 (收件箱, 无日期)
+      'today'       → st=1 + sr=今天
+      'tomorrow'    → st=2 + sr=明天
+      'anytime'     → st=1 (随时/日程)
+      'someday'     → st=2 (某天/以后)
+      'YYYY-MM-DD'  → st=2 + sr=指定日期
+    Things Cloud Task6 modify 必须带 md (修改日期, 秒级)。
+    """
+    from things_cloud import ST_INBOX, ST_ANYTIME, ST_SOMEDAY, _things_now, _date_to_ts
+    from datetime import datetime, timedelta
+
+    now_ts = _things_now()
+
+    # 解析 target → (st, sr_ts_or_None)
+    target_lc = (target or "").lower().strip()
+    if target_lc in ("inbox", ""):
+        st_val, sr_val = ST_INBOX, None
+    elif target_lc == "today":
+        st_val = ST_ANYTIME
+        sr_val = _date_to_ts(datetime.now().strftime("%Y-%m-%d"))
+    elif target_lc == "tomorrow":
+        st_val = ST_SOMEDAY
+        tmr = datetime.now() + timedelta(days=1)
+        sr_val = _date_to_ts(tmr.strftime("%Y-%m-%d"))
+    elif target_lc in ("anytime", "scheduled"):
+        st_val, sr_val = ST_ANYTIME, None
+    elif target_lc in ("someday", "upcoming"):
+        st_val, sr_val = ST_SOMEDAY, None
+    else:
+        # 尝试 YYYY-MM-DD
+        try:
+            st_val = ST_SOMEDAY
+            sr_val = _date_to_ts(target_lc)
+        except Exception:
+            raise ValueError(f"未知 target: {target}")
+
+    p = {"st": st_val, "md": now_ts}
+    if sr_val is not None:
+        p["sr"] = sr_val
+    # inbox 明确清空 sr
+    if st_val == ST_INBOX:
+        p["sr"] = 0
+
+    if things._head_index is None:
+        head = things.client.get_history_head(things.history_key)
+        things._head_index = head.get("latest-server-index", 0)
+    ancestor = things._head_index
+
+    item = {"uuid": uuid, "e": "Task6", "t": 1, "p": p}
+    new_head = things.client.commit(things.history_key, [item], ancestor)
+    things._head_index = new_head
+
+    # 即时更新本地缓存
+    t = _cache_lookup(things, uuid)
+    if t is not None:
+        from things_cloud import ST_INBOX, ST_ANYTIME, ST_SOMEDAY
+        st_map = {ST_INBOX: "inbox", ST_ANYTIME: "anytime", ST_SOMEDAY: "someday"}
+        t["st_code"] = st_val
+        t["schedule"] = st_map.get(st_val, "inbox")
+        if sr_val is not None:
+            t["scheduled_ms"] = sr_val
+            try:
+                from datetime import datetime as _dt
+                if abs(float(sr_val)) > 1e12:
+                    t["scheduled_date"] = _dt.fromtimestamp(float(sr_val) / 1000).strftime("%Y-%m-%d")
+                else:
+                    t["scheduled_date"] = _dt.fromtimestamp(float(sr_val)).strftime("%Y-%m-%d")
+            except Exception:
+                pass
+        elif st_val == ST_INBOX:
+            t["scheduled_ms"] = None
+            t["scheduled_date"] = ""
+    return True
 
 
 # ============================================================

@@ -644,7 +644,54 @@ def _rebuild_state(items: list[dict]) -> list[dict]:
     """
     将 history items 重建为**完整**的当前任务状态快照。
     包括所有状态: 待办 / 已完成 / 已取消 / 已删除。
+
+    重要: 第一遍先扫 Tag4 / Area3 实体检出 {uuid: 中文名} 映射,
+          第二遍处理 Task*, 格式化时把 tg/pr/ar 的 UUID 翻译成中文。
     """
+    # ---------- 第一遍: 扫 Tag4 / Area3, 构建名字映射 ----------
+    tag_map: dict[str, str] = {}       # Tag4 uuid -> 标签中文名
+    area_map: dict[str, str] = {}      # Area3 uuid -> 区域名
+
+    # 用 state 累积 Tag4/Area3 的最新 payload (支持 modified 覆盖)
+    meta_state: dict[str, tuple[str, dict]] = {}  # uuid -> (kind, latest_payload)
+
+    for item in items:
+        try:
+            uuid = item["uuid"]
+            kind = item.get("e", "")
+            action = item.get("t", -1)
+            payload = item.get("p", {})
+            if not isinstance(payload, dict):
+                payload = {}
+
+            if kind == KIND_TAG or kind == KIND_AREA:
+                if action == ACTION_CREATED or uuid not in meta_state:
+                    meta_state[uuid] = (kind, dict(payload))
+                elif action == ACTION_MODIFIED and uuid in meta_state:
+                    prev_kind, prev_p = meta_state[uuid]
+                    prev_p.update(payload)
+                    meta_state[uuid] = (prev_kind, prev_p)
+        except Exception:
+            continue
+
+    # 从 meta_state 提取名字
+    for uuid, (kind, p) in meta_state.items():
+        name = p.get("tt", "") if isinstance(p.get("tt"), str) else ""
+        if not name:
+            # Fractus 兜底: {"o":"text"} 或 {"o":{"c":"..."}}
+            name = (p.get("tt") or p.get("pn") or "")
+            if isinstance(name, dict):
+                name = (name.get("o") or name.get("c") or "")
+                if isinstance(name, dict):
+                    name = name.get("c", "")
+        if kind == KIND_TAG and name:
+            tag_map[uuid] = name
+        elif kind == KIND_AREA and name:
+            area_map[uuid] = name
+
+    _log.debug(f"[rebuild] tag_map={len(tag_map)} area_map={len(area_map)}")
+
+    # ---------- 第二遍: 处理 Task* ----------
     state: dict[str, dict] = {}
 
     for item in items:
@@ -675,14 +722,20 @@ def _rebuild_state(items: list[dict]) -> list[dict]:
     result = []
     for v in state.values():
         try:
-            result.append(_format_task_full(v))
+            result.append(_format_task_full(v, tag_map=tag_map, area_map=area_map))
         except Exception as e:
             print(f"[rebuild] format fail {v.get('uuid','?')}: {e}")
     return result
 
 
-def _format_task_full(raw: dict) -> dict:
-    """把原始 task 格式化成前端友好的 dict。"""
+def _format_task_full(raw: dict, *, tag_map: dict[str, str] | None = None,
+                      area_map: dict[str, str] | None = None) -> dict:
+    """
+    把原始 task 格式化成前端友好的 dict。
+    tag_map / area_map: 由 _rebuild_state 传入的 {uuid: 中文名} 映射。
+    """
+    tag_map = tag_map or {}
+    area_map = area_map or {}
     p = raw.get("p", {})
     # 类型映射
     tp_map = {0: "task", 1: "project", 2: "heading"}
@@ -786,10 +839,13 @@ def _format_task_full(raw: dict) -> dict:
         "deadline_ms": p.get("dd") or p.get("dl"),
         "deadline_date": _ts_to_date(p.get("dd") or p.get("dl")),
         "completion_date": _ts_to_date(p.get("sp") or p.get("comd")),
-        "tags": _safe_list(p.get("tg")),
+        # tags: Task6.tg 存的是 Tag4 UUID 列表 → 翻译成中文名
+        "tags": [tag_map.get(u, u) for u in _safe_list(p.get("tg"))],
         "project_uuid": p.get("pr"),
         "area_uuid": p.get("ar"),
         "heading_uuid": p.get("hd"),
+        "project_name": "",   # Project 是 tp=1 的 Task6, 需额外 project_map (留空, 后期补)
+        "area_name": area_map.get(p.get("ar"), "") if p.get("ar") else "",
         "created_ms": p.get("cd"),
         "created_date": _ts_to_date(p.get("cd")),
     }

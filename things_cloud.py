@@ -26,21 +26,59 @@ _log = logging.getLogger("things")
 API_ENDPOINT = "https://cloud.culturedcode.com"
 
 # =====================================================================
-# 🚨🚨🚨 终极伪装: 和你 iPhone 完全一致! 🚨🚨🚨
+# 🔒 版本护栏 (v2.5.10) — 永久镜像手机端基准, 不论 Windows 怎么迭代
 #
-# 你 iPhone 是 Things 3.22.8 — 我们必须伪装成 "ThingsiPhone/32208"
-# 否则 iPhone 看到 history 里有 "比我旧的客户端版本" → 弹"有其他端使用
-# 版本更高, 手机端需要更新"
+# 手机端受 iOS 16.2 限制, 最高只能装 Things 3.22.8 且无法再升级。
+# 手机端"其他端版本更高, 需要更新"弹窗由云端记录的客户端版本/schema
+# 信息触发, Windows 端是唯一可控的上报方 —— 只要把上报值永久钳制在
+# 手机端基准以内, Windows 后续任何迭代都不可能再触发该弹窗。
 #
-# 版本号编码: 主版本(1位) + 次版本(2位) + patch(2位) = 5 位
-#   3.21.8 = 3 + 21 + 08 = "32108"  (旧, 已废弃)
-#   3.22.8 = 3 + 22 + 08 = "32208"  (当前手机端)
+# 手机端永久基准 (Things 3.22.8 / iOS 16.2):
+#   PHONE_VERSION_CEILING = "32208"   5位编码: 主(1) + 次(2) + 补丁(2)
+#   PHONE_SCHEMA_CEILING  = "301"     手机端 3.22.x 支持的 schema
 #
-# EntityType: Task6 (iPhone 3.22.x 认识)
-# Schema: 301 (服务端 latest-schema-version=301, 201 已过期)
+# 将来手机端若真升级了, 只需同步上调这两个基准值。
+# 下面的上报候选值想怎么改都行, _enforce_version_guard() 会在 import
+# 时自动把超过基准的值压回并写警告日志 —— 结构性保证, 不靠人记。
+#
+# EntityType: Task6 (服务端 E2E 验证可正常读写)
 # =====================================================================
 
+PHONE_VERSION_CEILING = "32208"   # 手机端版本编码上限 (永久基准)
+PHONE_SCHEMA_CEILING = "301"      # 手机端 schema 上限 (永久基准)
+
+# 上报候选值 (超过基准会被护栏自动压回)
 THINGS_VERSION_CODE = "32208"           # iPhone Things 3.22.8 (5位编码)
+SCHEMA_HEADER = "301"                   # 服务端 latest-schema-version=301
+
+
+def _enforce_version_guard():
+    """import 时强制钳制: 任何超过手机端基准的配置自动压回 + 记日志。"""
+    global THINGS_VERSION_CODE, SCHEMA_HEADER
+    try:
+        if int(THINGS_VERSION_CODE) > int(PHONE_VERSION_CEILING):
+            _log.warning(
+                "版本护栏: THINGS_VERSION_CODE=%s 超过手机端基准 %s, 已自动压回",
+                THINGS_VERSION_CODE, PHONE_VERSION_CEILING,
+            )
+            THINGS_VERSION_CODE = PHONE_VERSION_CEILING
+        if int(SCHEMA_HEADER) > int(PHONE_SCHEMA_CEILING):
+            _log.warning(
+                "版本护栏: SCHEMA_HEADER=%s 超过手机端基准 %s, 已自动压回",
+                SCHEMA_HEADER, PHONE_SCHEMA_CEILING,
+            )
+            SCHEMA_HEADER = PHONE_SCHEMA_CEILING
+    except ValueError:
+        _log.warning(
+            "版本护栏: 版本值非法 (%r / %r), 重置为手机端基准",
+            THINGS_VERSION_CODE, SCHEMA_HEADER,
+        )
+        THINGS_VERSION_CODE = PHONE_VERSION_CEILING
+        SCHEMA_HEADER = PHONE_SCHEMA_CEILING
+
+
+_enforce_version_guard()
+
 THINGS_USER_AGENT = f"ThingsiPhone/{THINGS_VERSION_CODE}"   # ThingsiPhone/32208
 THINGS_APP_ID = "com.culturedcode.ThingsiPhone"
 THINGS_APP_INSTANCE_ID = (
@@ -48,7 +86,6 @@ THINGS_APP_INSTANCE_ID = (
     f"{THINGS_APP_ID}-"
     "000000000000000000000000000000000000000000000000000000000000000"
 )
-SCHEMA_HEADER = "301"                   # 服务端 latest-schema-version=301 (201 已过期, E2E 已验证)
 
 # Schedule 字段 (st)
 ST_INBOX = 0        # Inbox
@@ -61,7 +98,7 @@ SS_CANCELED = 2
 SS_COMPLETED = 3
 
 # Item Kind
-KIND_TASK6 = "Task6"  # Things 3.21.x 兼容 (iPhone 3.21.8)
+KIND_TASK6 = "Task6"  # 服务端 E2E 验证兼容 (iPhone 3.22.x)
 KIND_TASK7 = "Task7"
 KIND_AREA = "Area3"
 KIND_TAG = "Tag4"

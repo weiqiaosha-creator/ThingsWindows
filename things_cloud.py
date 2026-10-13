@@ -28,25 +28,27 @@ API_ENDPOINT = "https://cloud.culturedcode.com"
 # =====================================================================
 # 🚨🚨🚨 终极伪装: 和你 iPhone 完全一致! 🚨🚨🚨
 #
-# 你 iPhone 是 Things 3.21.8 — 我们必须伪装成 "ThingsiPhone/3.21.8"
-# 否则 iPhone 看到 history 里有 "比我新的客户端版本" → 强制弹"必须更新"
+# 你 iPhone 是 Things 3.22.8 — 我们必须伪装成 "ThingsiPhone/32208"
+# 否则 iPhone 看到 history 里有 "比我旧的客户端版本" → 弹"有其他端使用
+# 版本更高, 手机端需要更新"
 #
-# 版本号编码: Things 3.21.x 时代用 5 位 (主1+次2+修2)
-#   3.21.8 = 3 + 21 + 08 = "32108"
+# 版本号编码: 主版本(1位) + 次版本(2位) + patch(2位) = 5 位
+#   3.21.8 = 3 + 21 + 08 = "32108"  (旧, 已废弃)
+#   3.22.8 = 3 + 22 + 08 = "32208"  (当前手机端)
 #
-# EntityType: Task6 (iPhone 3.21.x 认识)
-# Schema: 201 (Task6 配套)
+# EntityType: Task6 (iPhone 3.22.x 认识)
+# Schema: 301 (服务端 latest-schema-version=301, 201 已过期)
 # =====================================================================
 
-THINGS_VERSION_CODE = "32108"           # iPhone Things 3.21.8 (5位编码)
-THINGS_USER_AGENT = f"ThingsiPhone/{THINGS_VERSION_CODE}"   # ThingsiPhone/32108
+THINGS_VERSION_CODE = "32208"           # iPhone Things 3.22.8 (5位编码)
+THINGS_USER_AGENT = f"ThingsiPhone/{THINGS_VERSION_CODE}"   # ThingsiPhone/32208
 THINGS_APP_ID = "com.culturedcode.ThingsiPhone"
 THINGS_APP_INSTANCE_ID = (
     "000000000000000000000000000000000000000000000000000000000000000-"
     f"{THINGS_APP_ID}-"
     "000000000000000000000000000000000000000000000000000000000000000"
 )
-SCHEMA_HEADER = "201"                   # Task6 配套 schema
+SCHEMA_HEADER = "301"                   # 服务端 latest-schema-version=301 (201 已过期, E2E 已验证)
 
 # Schedule 字段 (st)
 ST_INBOX = 0        # Inbox
@@ -199,15 +201,15 @@ class ThingsCloudError(Exception):
 class ThingsClient:
     """Things Cloud HTTP 客户端。"""
 
-    # 🚨 终极伪装: 完全复刻 iPhone Things 3.21.8
-    # iPhone 看到 history 里有 ThingsiPhone/32108 → 认为是"同版本同平台" → 不弹更新!
+    # 🚨 终极伪装: 完全复刻 iPhone Things 3.22.8
+    # iPhone 看到 history 里有 ThingsiPhone/32208 (与本机 3.22.8 一致) → 认为是"同版本同平台" → 不弹更新!
     CLIENT_INFO = {
         "dm": "iPhone14,2",           # iPhone 13 Pro (常见设备型号)
         "lr": "CN",
         "nf": True,
         "nk": True,
         "nn": "ThingsiPhone",
-        "nv": THINGS_VERSION_CODE,    # "32108" — 5位编码 3.21.8
+        "nv": THINGS_VERSION_CODE,    # "32208" — 5位编码 3.22.8 (与手机一致)
         "on": "iOS",
         "ov": "16.2",                  # 精确匹配你的 iPhone iOS 版本
         "pl": "zh-CN",

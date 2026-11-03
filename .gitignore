@@ -10,6 +10,14 @@ things_debug.log
 
 # 临时调试脚本
 _*.py
+_*.ps1
+
+# v2.5.11: 授权签名密钥 - 永不进公开 Git
+lic_secret.py
+
+# PyArmor 混淆输出
+obf/
+pyarmor.bug.log
 
 # Python
 __pycache__/

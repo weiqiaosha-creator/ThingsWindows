@@ -14,7 +14,12 @@ import struct
 import sys
 import time
 
-SECRET = b"ThingsWindows-2026-Secret-Key-Change-Me-Anytime"
+# v2.5.11: 签名密钥移入 lic_secret.py (不进公开 Git, 仅本地/打包产物持有)。
+# 公开仓库 clone 后因缺少密钥文件无法签发/验证授权码, 需自行生成密钥。
+try:
+    from lic_secret import SECRET  # noqa: F401
+except ImportError:
+    SECRET = b""
 LICENSE_VERSION = 1
 PERMANENT_TS = 4102444799
 APP_NAME = "ThingsWindows"

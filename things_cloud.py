@@ -192,15 +192,14 @@ def _things_now() -> float:
 
 def _date_to_ts(ymd: str) -> float:
     """
-    将 YYYY-MM-DD 转换为 Things Cloud 使用的秒级时间戳 (本地时区零点)。
-    Things 的 sr / tir / dd / cd / md / sp 字段存的是秒级时间戳。
+    将 YYYY-MM-DD 转换为 Things Cloud 使用的秒级时间戳。
+    v2.5.13: 对齐官方客户端口径 — 日期统一存 UTC 零点。
+    实测: 北京用户手机上排"2026-11-09", 官方写 sr=1794182400 (=UTC 零点, 北京 08:00)。
+    旧版写本地零点, 与官方差 8 小时。
     """
-    dt = datetime.strptime(ymd, "%Y-%m-%d")
-    # 本地时区午夜时间戳
-    local_offset = datetime.now().astimezone().utcoffset()
-    epoch_aware = datetime(1970, 1, 1, tzinfo=timezone.utc)
-    dt_local = dt.replace(tzinfo=timezone(local_offset))
-    return float((dt_local - epoch_aware).total_seconds())
+    dt = datetime.strptime(ymd, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    return float((dt - epoch).total_seconds())
 
 
 def _resolve_when(when: str) -> tuple[int, float | None]:
@@ -936,16 +935,20 @@ def filter_tasks(tasks: list[dict], *, only_pending: bool = True,
     now_local = _dt.now()
     today_midnight = _dt(now_local.year, now_local.month, now_local.day)
     today_ts = int(today_midnight.timestamp())   # 秒级 (Things Cloud 用秒)
+    today_date = now_local.date()                # v2.5.13: 日期对日期比较用
 
     def _is_today_or_overdue(sr_ms_or_s):
-        """判断一个任务的 sr (秒或毫秒) 是否 <= 今天"""
+        """判断一个任务的 sr (秒或毫秒) 的日期是否 <= 今天
+        v2.5.13: 按"日期对日期"比较 — 官方客户端把日期存为 UTC 零点 (北京时间早上8点),
+        旧版 PC 存本地零点; 若用时间戳对比本地零点, 手机排的"今天"任务会被误判为未来。
+        """
         if not sr_ms_or_s:
             return False
         try:
             v = float(sr_ms_or_s)
             if v > 1e12:
                 v = v / 1000.0
-            return v <= today_ts
+            return _dt.fromtimestamp(v).date() <= today_date
         except Exception:
             return False
 
@@ -956,7 +959,7 @@ def filter_tasks(tasks: list[dict], *, only_pending: bool = True,
             v = float(sr_ms_or_s)
             if v > 1e12:
                 v = v / 1000.0
-            return v > today_ts
+            return _dt.fromtimestamp(v).date() > today_date
         except Exception:
             return False
 

@@ -558,6 +558,28 @@ class Things:
 
     # ---------- 写入 ----------
 
+    def _compute_new_sort_index(self, st: int, project_uuid: str | None = None):
+        """
+        v2.5.12: 计算新任务的排序位 (ix), 对齐官方客户端行为。
+        官方客户端把新任务插入目标列表**顶部**, 按 ix 升序展示 →
+        取同列表现有最小 ix 再减一个步长, 保证排到最前面。
+        之前固定写 ix=0, 手机端把所有 PC 任务视作同一位置 → 顺序"随机"。
+        """
+        try:
+            self._maybe_refresh()
+            tasks = self._tasks or []
+            same_list = [t for t in tasks
+                         if t.get("st_code") == st and not t.get("trashed")]
+            if project_uuid:
+                same_list = [t for t in same_list
+                             if project_uuid in (t.get("project_uuid") or [])]
+            ix_vals = [t.get("ix") for t in same_list if t.get("ix") is not None]
+            if not ix_vals:
+                return 0
+            return min(ix_vals) - 100
+        except Exception:
+            return 0
+
     def add_task(
         self,
         title: str,
@@ -577,6 +599,9 @@ class Things:
             title=title, notes=notes, when=when,
             deadline=deadline, tags=tags, project_uuid=project_uuid,
         )
+        # v2.5.12: 按官方规则分配排序位 (新任务置顶)
+        st_new, _sr_new = _resolve_when(when)
+        payload["ix"] = self._compute_new_sort_index(st_new, project_uuid)
 
         # 获取最新 head index
         head = self.client.get_history_head(self.history_key)
@@ -873,6 +898,7 @@ def _format_task_full(raw: dict, *, tag_map: dict[str, str] | None = None,
         "type": tp_map.get(tp, "task"),
         "schedule": st_map.get(st, "inbox"),
         "st_code": st,
+        "ix": p.get("ix"),          # v2.5.12: 列表内排序位 (官方客户端按此排序)
         "scheduled_ms": p.get("sr"),
         "scheduled_date": _ts_to_date(p.get("sr")),
         "deadline_ms": p.get("dd") or p.get("dl"),

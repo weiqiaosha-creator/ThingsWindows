@@ -736,9 +736,26 @@ createApp({
       debounceTimer = setTimeout(fetchTasks, 300);
     }
 
-    // ---- 置顶 (本地, 不依赖 Things Cloud) ----
-    const pinnedUuids = ref(new Set(JSON.parse(localStorage.getItem('tw_pinned') || '[]')));
-    function savePinned() { localStorage.setItem('tw_pinned', JSON.stringify([...pinnedUuids.value])); }
+    // ---- 置顶 (v2.5.12: 存服务器磁盘文件 — localStorage 会被 WebView2 清掉, 重启置顶就丢) ----
+    const pinnedUuids = ref(new Set());
+    async function loadPinned() {
+      try {
+        // 迁移: 老版本存在 localStorage 里的置顶, 首次自动搬进服务器文件
+        const legacy = JSON.parse(localStorage.getItem('tw_pinned') || '[]');
+        const res = await API('/api/pins');
+        if (res.ok && (res.pinned || []).length > 0) {
+          pinnedUuids.value = new Set(res.pinned);
+        } else if (legacy.length > 0) {
+          pinnedUuids.value = new Set(legacy);
+          savePinned();
+        }
+        localStorage.removeItem('tw_pinned');
+      } catch (e) { /* 接口异常时静默, 不影响主流程 */ }
+    }
+    function savePinned() {
+      fetch('/api/pins', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uuids: [...pinnedUuids.value] }) });
+    }
     function togglePin(uuid) {
       if (pinnedUuids.value.has(uuid)) pinnedUuids.value.delete(uuid);
       else pinnedUuids.value.add(uuid);
@@ -1024,6 +1041,7 @@ createApp({
         // 加载授权状态 + 自动采集机器码 (不管登录没登录)
         fetchLicense();
         fetchMachineCode();
+        loadPinned();   // v2.5.12: 置顶列表从磁盘恢复
 
         // 先检查有没有记住的账号 (后端会验证设备指纹 + DPAPI)
         const remRes = await API('/api/remembered');

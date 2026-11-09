@@ -21,8 +21,8 @@ from urllib.parse import urlparse, parse_qs
 # ============================================================
 # 🔖 版本号 — 只改这里, 保持三处一致
 # ============================================================
-VERSION = "2.5.11"           # 内部版本 (精确到 patch)
-DISPLAY_VERSION = "2.5"      # 用户可见 (只保留前两位, 比如 "2.5" 版) — v2.5.11: 授权密钥移出公开源码 + PyArmor 混淆, 面向开源发布的保护版本
+VERSION = "2.5.12"           # 内部版本 (精确到 patch)
+DISPLAY_VERSION = "2.5"      # 用户可见 (只保留前两位, 比如 "2.5" 版) — v2.5.12: 修复 PC 任务在手机端排序"随机" (ix 排序位对齐官方客户端)
 APP_NAME = "Things Windows"
 
 import auth_store  # noqa: E402  — 安全凭证存储 (DPAPI + 设备指纹 + 2FA)
@@ -96,6 +96,29 @@ if getattr(sys, "frozen", False):
     STATIC_DIR = sys._MEIPASS
 
 INDEX_HTML = os.path.join(STATIC_DIR, "index.html")
+
+
+# ============================================================
+# 置顶持久化 (v2.5.12) — localStorage 会被 WebView2 清掉, 改存磁盘
+# ============================================================
+
+def _pins_file() -> str:
+    d = os.path.join(os.environ.get("APPDATA", _LOG_DIR), "ThingsWindows")
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, "pins.json")
+
+
+def _load_pins() -> list:
+    try:
+        with open(_pins_file(), "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def _save_pins(uuids: list):
+    with open(_pins_file(), "w", encoding="utf-8") as f:
+        json.dump(uuids, f, ensure_ascii=False)
 
 
 def _get_things() -> Things:
@@ -176,6 +199,10 @@ class Handler(BaseHTTPRequestHandler):
                 # 前端启动时检查: 这台电脑记住了账号吗?
                 info = auth_store.has_remembered()
                 self._send_json({"ok": True, **info})
+
+            elif path == "/api/pins":
+                # v2.5.12: 置顶列表 (磁盘持久化, 重启不丢)
+                self._send_json({"ok": True, "pinned": _load_pins()})
 
             elif path == "/api/tasks/all":
                 t = _get_things()
@@ -305,7 +332,12 @@ class Handler(BaseHTTPRequestHandler):
         body = self._read_body()
 
         try:
-            if path == "/api/auth":
+            if path == "/api/pins":
+                # v2.5.12: 保存置顶列表 (磁盘持久化)
+                _save_pins(body.get("uuids", []))
+                self._send_json({"ok": True})
+
+            elif path == "/api/auth":
                 email = (body.get("email") or "").strip()
                 password = body.get("password") or ""
                 remember = body.get("remember", False)
@@ -810,6 +842,8 @@ def move_task_schedule(things: Things, uuid: str, target: str) -> bool:
             raise ValueError(f"未知 target: {target}")
 
     p = {"st": st_val, "md": now_ts}
+    # v2.5.12: 移动后放到目标列表顶部 (对齐官方客户端排序行为)
+    p["ix"] = things._compute_new_sort_index(st_val)
     if sr_val is not None:
         p["sr"] = sr_val
     # inbox 明确清空 sr

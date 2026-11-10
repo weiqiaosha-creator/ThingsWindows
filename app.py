@@ -21,8 +21,8 @@ from urllib.parse import urlparse, parse_qs
 # ============================================================
 # 🔖 版本号 — 只改这里, 保持三处一致
 # ============================================================
-VERSION = "2.5.13"           # 内部版本 (精确到 patch)
-DISPLAY_VERSION = "2.5"      # 用户可见 (只保留前两位, 比如 "2.5" 版) — v2.5.13: 修复手机"今天"任务因时区口径差8小时不进PC"今天"列表
+VERSION = "2.5.14"           # 内部版本 (精确到 patch)
+DISPLAY_VERSION = "2.5"      # 用户可见 (只保留前两位, 比如 "2.5" 版) — v2.5.14: 界面显示手机端对应版本号 (兼容 Things 3.22.8)
 APP_NAME = "Things Windows"
 
 import auth_store  # noqa: E402  — 安全凭证存储 (DPAPI + 设备指纹 + 2FA)
@@ -187,12 +187,16 @@ class Handler(BaseHTTPRequestHandler):
         # API
         try:
             if path == "/api/health":
+                from things_cloud import THINGS_VERSION_CODE as _tvc
                 self._send_json({
                     "ok": True,
                     "authenticated": "things" in _session,
                     "version": VERSION,
                     "display_version": DISPLAY_VERSION,
                     "app_name": APP_NAME,
+                    # 手机端对应版本 (5位编码 → x.y.z, 如 32208 → 3.22.8)
+                    "phone_things_version": f"{_tvc[0]}.{_tvc[1:3]}.{int(_tvc[3:])}",
+                    "phone_things_platform": "iOS",
                 })
 
             elif path == "/api/remembered":

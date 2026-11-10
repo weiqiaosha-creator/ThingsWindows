@@ -31,6 +31,7 @@
       <div class="text-center mb-8">
         <div class="inline-block w-14 h-14 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 text-white text-2xl font-bold flex items-center justify-center mb-4">T</div>
         <h1 class="text-2xl font-semibold text-gray-800">Things Windows</h1>
+        <p class="text-xs text-gray-400 mt-1.5">PC v{{ health.version || '…' }} · 兼容手机端 Things {{ health.phone_things_version || '…' }} ({{ health.phone_things_platform || 'iOS' }})</p>
         <p class="text-sm text-gray-500 mt-1" v-if="!remembered.has">连接你的 Things Cloud 账号</p>
         <p class="text-sm text-gray-500 mt-1" v-else>欢迎回来 👋</p>
       </div>
@@ -172,6 +173,7 @@
         <div>
           <div class="text-xs text-gray-400">已连接</div>
           <div class="text-sm font-medium text-gray-700 truncate" :title="account.email">{{ account.email }}</div>
+          <div class="text-[10px] text-gray-400 mt-0.5">PC v{{ health.version || '…' }} · 手机端 Things {{ health.phone_things_version || '…' }}</div>
         </div>
         <button @click="logout" title="退出" class="text-gray-400 hover:text-gray-600 text-xs">⎋</button>
       </div>
@@ -580,6 +582,7 @@ createApp({
   setup() {
     const auth = ref(false);
     const account = ref({ email: '' });
+    const health = ref({});   // v2.5.14: /api/health 数据 (含手机端对应版本号)
     const form = ref({ email: '', password: '', remember: true, enablePin: false, pin: '' });
     const loginError = ref('');
     const loading = ref(false);
@@ -1050,6 +1053,7 @@ createApp({
         }
 
         const res = await API('/api/health');
+        health.value = res;   // v2.5.14: 界面显示 PC/手机端版本号
         if (res.authenticated) {
           const acc = await API('/api/account');
           account.value.email = acc.email;
@@ -1072,7 +1076,7 @@ createApp({
     });
 
     return {
-      auth, account, form, loginError, loading, remembered,
+      auth, account, form, loginError, loading, remembered, health,
       currentList, currentTitle, currentSubtitle, sidebar,
       tasks, searchKeyword, selectedUuid, selectedTask,
       showAddModal, newForm, toast, stats, dedupPlan,

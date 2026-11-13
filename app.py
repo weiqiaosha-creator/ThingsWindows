@@ -21,8 +21,8 @@ from urllib.parse import urlparse, parse_qs
 # ============================================================
 # 🔖 版本号 — 只改这里, 保持三处一致
 # ============================================================
-VERSION = "2.5.14"           # 内部版本 (精确到 patch)
-DISPLAY_VERSION = "2.5"      # 用户可见 (只保留前两位, 比如 "2.5" 版) — v2.5.14: 界面显示手机端对应版本号 (兼容 Things 3.22.8)
+VERSION = "2.5.15"           # 内部版本 (精确到 patch)
+DISPLAY_VERSION = "2.5"      # 用户可见 (只保留前两位, 比如 "2.5" 版) — v2.5.15: 按日期排序(ix重排) + 创建日期可修改(cd) + 新建任务日期选择器修复
 APP_NAME = "Things Windows"
 
 import auth_store  # noqa: E402  — 安全凭证存储 (DPAPI + 设备指纹 + 2FA)
@@ -524,6 +524,13 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError as e:
                     self._send_error(str(e))
 
+            elif path == "/api/reorder":
+                # v2.5.15: 按前端给定顺序重写 ix 排序位 (PC + 手机端同步生效)
+                t = _get_things()
+                uuids = body.get("uuids", [])
+                n = reorder_tasks(t, uuids)
+                self._send_json({"ok": True, "reordered": n})
+
             elif path == "/api/dedupe/apply":
                 t = _get_things()
                 remove_uuids = body.get("remove_uuids", [])
@@ -762,6 +769,16 @@ def modify_task_fields(things: Things, uuid: str, fields: dict) -> dict:
             except Exception:
                 raise ValueError(f"效期格式错误, 需 YYYY-MM-DD: {val}")
 
+    # 创建日期 (v2.5.15)
+    if "cd" in fields:
+        val = (fields["cd"] or "").strip() if isinstance(fields["cd"], str) else fields["cd"]
+        if val:
+            try:
+                p["cd"] = _date_to_ts(str(val).strip())
+                changed.append("created")
+            except Exception:
+                raise ValueError(f"创建日期格式错误, 需 YYYY-MM-DD: {val}")
+
     if len(p) == 1 and "md" in p:
         # 只有 md → 没改东西
         return {"ok": True, "changed": []}
@@ -802,7 +819,80 @@ def modify_task_fields(things: Things, uuid: str, fields: dict) -> dict:
                 t["deadline_ms"] = None
                 t["deadline_date"] = ""
 
+        if "cd" in p:
+            t["created_ms"] = p["cd"]
+            try:
+                from datetime import datetime as _dt
+                v = float(p["cd"])
+                if abs(v) > 1e12:
+                    v = v / 1000.0
+                t["created_date"] = _dt.fromtimestamp(v).strftime("%Y-%m-%d")
+            except Exception:
+                pass
+
     return {"ok": True, "changed": changed}
+
+
+def reorder_tasks(things: Things, uuids: list[str]) -> int:
+    """
+    v2.5.15: 按前端给定的顺序 (uuids 从上到下) 重写 ix 排序位。
+    重用这些任务现有的 ix 值做升序重排 —— 不影响同组其他任务的相对位置;
+    手机端 Things 也按 ix 升序展示, 所以排序结果两端一致。
+    返回实际改写的任务数。
+    """
+    from things_cloud import _things_now
+
+    if not uuids or len(uuids) < 2:
+        return 0
+    if things._tasks is None:
+        things.sync()
+
+    by_uuid = {t.get("uuid"): t for t in things._tasks}
+    targets = [by_uuid[u] for u in uuids if u in by_uuid]
+    if len(targets) < 2:
+        return 0
+
+    # 收集现有 ix 值 (老数据可能是字符串, 统一转数值)
+    ix_raw = []
+    for t in targets:
+        v = t.get("ix")
+        if v is None:
+            continue
+        try:
+            ix_raw.append(float(v))
+        except (TypeError, ValueError):
+            pass
+
+    if len(set(ix_raw)) == len(targets):
+        # 现有值互不重复 → 原地重排 (零漂移)
+        ix_vals = sorted(ix_raw)
+    else:
+        # 有重复 (如旧版 PC 建的任务全是 ix=0) → 以当前最小值为基点重新均匀分布
+        # 位置0(最上)最小: base-100*(n-1) ... base
+        base = min(ix_raw) if ix_raw else 0
+        n = len(targets)
+        ix_vals = [base - 100 * (n - 1 - pos) for pos in range(n)]
+
+    now_ts = _things_now()
+    if things._head_index is None:
+        head = things.client.get_history_head(things.history_key)
+        things._head_index = head.get("latest-server-index", 0)
+    ancestor = things._head_index
+
+    items = []
+    for pos, task in enumerate(targets):
+        v = ix_vals[pos]
+        new_ix = int(v) if float(v).is_integer() else v
+        if task.get("ix") == new_ix:
+            continue
+        items.append({"uuid": task["uuid"], "e": "Task6", "t": 1, "p": {"ix": new_ix, "md": now_ts}})
+        task["ix"] = new_ix  # 即时更新缓存
+
+    if not items:
+        return 0
+    new_head = things.client.commit(things.history_key, items, ancestor)
+    things._head_index = new_head
+    return len(items)
 
 
 def move_task_schedule(things: Things, uuid: str, target: str) -> bool:

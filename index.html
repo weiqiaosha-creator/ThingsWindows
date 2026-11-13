@@ -438,7 +438,8 @@
         </div>
         <div class="flex items-start gap-2">
           <span class="w-14 text-gray-400 shrink-0">创建</span>
-          <span class="flex-1 text-gray-600 text-xs">{{ selectedTask.created_date }}</span>
+          <input type="date" v-model="cdInput" @change="saveCreated"
+            class="flex-1 text-xs px-2 py-1 border border-gray-200 rounded focus:outline-none focus:border-blue-400 bg-white text-gray-600" />
         </div>
         <div class="flex items-start gap-2">
           <span class="w-14 text-gray-400 shrink-0">效期</span>
@@ -458,6 +459,11 @@
             class="flex-1 text-xs py-2 rounded border"
             :class="isPinned(selectedTask.uuid) ? 'bg-yellow-100 border-yellow-300 text-yellow-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'">
             📌 {{ isPinned(selectedTask.uuid) ? '取消置顶' : '置顶' }}
+          </button>
+          <button @click="sortByDate" :disabled="reordering"
+            class="flex-1 text-xs py-2 rounded border border-blue-200 text-blue-600 hover:bg-blue-50 disabled:opacity-50"
+            title="按标题前缀日期/创建日期重排当前列表, 越接近今天越靠上 (手机端同步)">
+            📅 {{ reordering ? '排序中...' : '按日期排序' }}
           </button>
           <button @click="trashSelected" class="flex-1 text-xs py-2 rounded border border-red-200 text-red-500 hover:bg-red-50">🗑️ 移入垃圾桶</button>
         </div>
@@ -482,10 +488,16 @@
                 <option value="evening">今天晚上</option>
                 <option value="tomorrow">明天</option>
                 <option value="someday">某天再说</option>
-                <option value="2026-10-03">指定日期...</option>
+                <option value="custom">指定日期...</option>
               </select>
               <input v-model="newForm.deadline" placeholder="截止 YYYY-MM-DD (可选)"
                 class="px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:border-blue-500">
+            </div>
+            <!-- v2.5.15: 选"指定日期/某天再说"时显示日期选择器 -->
+            <div v-if="newForm.when === 'custom' || newForm.when === 'someday'" class="flex items-center gap-2">
+              <span class="text-xs text-gray-400 shrink-0">{{ newForm.when === 'custom' ? '📅 日期 (必选)' : '📅 某天日期 (可选, 填了会进"以后")' }}</span>
+              <input type="date" v-model="newForm.customDate"
+                class="flex-1 px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:border-blue-500 text-sm">
             </div>
             <input v-model="newForm.tags" placeholder="标签 (逗号分隔, 可选)"
               class="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:border-blue-500">
@@ -604,7 +616,7 @@ createApp({
     const selectedTask = ref(null);
 
     const showAddModal = ref(false);
-    const newForm = ref({ title: '', when: '', deadline: '', tags: '', notes: '' });
+    const newForm = ref({ title: '', when: '', deadline: '', tags: '', notes: '', customDate: '' });
     const toast = ref(null);
     const dedupPlan = ref(null);
 
@@ -797,9 +809,17 @@ createApp({
     // ---- 任务操作 ----
     async function addTask() {
       if (!newForm.value.title.trim()) return;
+      // v2.5.15: 指定日期必须选日期; 某天再说选了日期则落到"以后"带日期
+      let when = newForm.value.when;
+      if (when === 'custom') {
+        if (!newForm.value.customDate) { showToast({ok:false, msg:'请先选择日期'}); return; }
+        when = newForm.value.customDate;
+      } else if (when === 'someday' && newForm.value.customDate) {
+        when = newForm.value.customDate;
+      }
       loading.value = true;
       const body = { title: newForm.value.title.trim() };
-      if (newForm.value.when) body.when = newForm.value.when;
+      if (when) body.when = when;
       if (newForm.value.deadline) body.deadline = newForm.value.deadline;
       if (newForm.value.tags) body.tags = newForm.value.tags.split(',').map(s => s.trim()).filter(Boolean);
       if (newForm.value.notes) body.notes = newForm.value.notes;
@@ -807,7 +827,7 @@ createApp({
       loading.value = false;
       if (res.ok) {
         showAddModal.value = false;
-        newForm.value = { title: '', when: '', deadline: '', tags: '', notes: '' };
+        newForm.value = { title: '', when: '', deadline: '', tags: '', notes: '', customDate: '' };
         showToast({ok: true, msg: '✅ 已添加'});
         fetchTasks();
       } else {
@@ -872,16 +892,67 @@ createApp({
     // v2.5.7: 详情面板字段编辑 —— tagInput / ddInput 与 selectedTask 双向同步
     const tagInput = ref('');
     const ddInput = ref('');
+    const cdInput = ref('');   // v2.5.15: 创建日期可编辑
     // 选中新任务时, 同步标签串和效期
     watch(selectedTask, (t) => {
       if (t) {
         tagInput.value = (t.tags || []).join(', ');
         ddInput.value = t.deadline_date || '';
+        cdInput.value = t.created_date || '';
       } else {
         tagInput.value = '';
         ddInput.value = '';
+        cdInput.value = '';
       }
     });
+
+    // v2.5.15: 修改创建日期 (cd 字段, 协议提交, 手机端同步)
+    async function saveCreated() {
+      if (!selectedTask.value || !cdInput.value) return;
+      if ((selectedTask.value.created_date || '') === cdInput.value) return;
+      const res = await API('/api/tasks/modify', {
+        method: 'POST',
+        body: JSON.stringify({ uuid: selectedTask.value.uuid, cd: cdInput.value }),
+      });
+      if (res.ok) {
+        selectedTask.value = { ...selectedTask.value, created_date: cdInput.value };
+        await fetchTasks();
+        showToast({ok:true, msg:'✅ 创建日期已修改'});
+      } else {
+        showToast({ok:false, msg: res.error || '修改失败'});
+      }
+    }
+
+    // v2.5.15: 按日期重排当前列表 (标题前缀日期优先, 创建日期兜底), 越接近今天越靠上
+    const reordering = ref(false);
+    async function sortByDate() {
+      if (reordering.value || tasks.value.length < 2) return;
+      reordering.value = true;
+      try {
+        const dateOf = (t) => {
+          const s = (t.title || '').trim();
+          let m = s.match(/^(\d{6}|\d{8})(?=[-\u2013\u2014\s.:、：,，_])/);
+          if (m) {
+            const d = m[1];
+            if (d.length === 6) return `20${d.slice(0,2)}-${d.slice(2,4)}-${d.slice(4,6)}`;
+            return `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`;
+          }
+          m = s.match(/^(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})/);
+          if (m) return `${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`;
+          return t.created_date || '';
+        };
+        const list = [...tasks.value].sort((a, b) => (dateOf(b) || '').localeCompare(dateOf(a) || ''));
+        const res = await API('/api/reorder', { method: 'POST', body: JSON.stringify({ uuids: list.map(t => t.uuid) }) });
+        if (res.ok) {
+          showToast({ok:true, msg:`📅 已按日期重排 ${res.reordered} 条 (手机端同步生效)`});
+          fetchTasks();
+        } else {
+          showToast({ok:false, msg: res.error || '排序失败'});
+        }
+      } finally {
+        reordering.value = false;
+      }
+    }
 
     // v2.5.7: 通用字段修改 handler
     let modifyDebounce = {};
@@ -1091,6 +1162,7 @@ createApp({
       pinnedUuids, togglePin, isPinned, displayTasks, tags, activeTag, switchTag,
       // v2.5.7/v2.5.8 详情面板 + 状态编辑
       tagInput, ddInput, quickModify, clearDeadline, quickModifyStatus,
+      cdInput, saveCreated, sortByDate, reordering,
       statusPopoverUuid, openStatusPopover, setStatus,
     };
   }

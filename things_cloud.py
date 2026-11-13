@@ -11,6 +11,7 @@ import io
 import json
 import logging
 import os
+import re
 import uuid as uuid_mod
 from datetime import datetime, timezone, timedelta
 
@@ -566,6 +567,9 @@ class Things:
         """
         try:
             self._maybe_refresh()
+            # v2.5.15 修复: 缓存为 None 时必须强拉云端, 否则 same_list 为空 → ix 恒为 0
+            if self._tasks is None:
+                self.sync()
             tasks = self._tasks or []
             same_list = [t for t in tasks
                          if t.get("st_code") == st and not t.get("trashed")]
@@ -913,6 +917,38 @@ def _format_task_full(raw: dict, *, tag_map: dict[str, str] | None = None,
         "created_ms": p.get("cd"),
         "created_date": _ts_to_date(p.get("cd")),
     }
+
+
+def parse_title_date(title: str):
+    """
+    v2.5.15: 解析任务标题开头的日期前缀, 用于"按日期排序"。
+    支持格式:
+      261113-xxx      → 2026-11-13  (YYMMDD + 分隔符)
+      20261113-xxx    → 2026-11-13  (YYYYMMDD + 分隔符)
+      2026-11-13 xxx  → 2026-11-13  (完整日期开头)
+    没有前缀返回 None。
+    """
+    if not title:
+        return None
+    t = str(title).strip()
+    m = re.match(r"^(\d{6}|\d{8})(?=[-\u2013\u2014\s.:、：,，_])", t)
+    if m:
+        d = m.group(1)
+        try:
+            if len(d) == 6:
+                return datetime.strptime(f"20{d[:2]}{d[2:4]}{d[4:6]}", "%Y%m%d").date()
+            return datetime.strptime(d, "%Y%m%d").date()
+        except ValueError:
+            return None
+    m = re.match(r"^(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})(?=[-\s.:、：,，_)]|$)", t)
+    if m:
+        try:
+            return datetime.strptime(
+                f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}", "%Y-%m-%d"
+            ).date()
+        except ValueError:
+            return None
+    return None
 
 
 def filter_tasks(tasks: list[dict], *, only_pending: bool = True,

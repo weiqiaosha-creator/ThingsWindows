@@ -420,10 +420,29 @@
           </div>
         </div>
         <div class="flex items-start gap-2">
-          <span class="w-14 text-gray-400 shrink-0">备注</span>
-          <textarea v-model="selectedTask.notes" @blur="quickModify('nt')"
-            class="flex-1 text-gray-600 bg-transparent border border-gray-200 rounded px-2 py-1 resize-none focus:outline-none focus:border-blue-400 text-xs"
-            rows="3" placeholder="点这里写备注..."></textarea>
+          <span class="w-14 text-gray-400 shrink-0 pt-2">备注</span>
+          <div class="flex-1 min-w-0">
+            <textarea v-model="selectedTask.notes" @blur="quickModify('nt')" @paste="onNotePaste"
+              class="w-full text-gray-600 bg-transparent border border-gray-200 rounded px-2 py-1 resize-none focus:outline-none focus:border-blue-400 text-xs"
+              rows="3" placeholder="点这里写备注... 支持 Ctrl+V 粘贴截图"></textarea>
+            <!-- v2.5.16: 本地附件缩略图 (手机端只显示标记文字, 协议限制) -->
+            <div v-if="noteImages.length" class="flex flex-wrap gap-1.5 mt-1.5">
+              <template v-for="img in noteImages" :key="img.name + img.pos">
+                <img v-if="img.kind === '图片'"
+                  :src="attUrl(selectedTask.uuid, img.name)"
+                  @click="lightbox = img"
+                  class="w-14 h-14 object-cover rounded border border-gray-200 cursor-zoom-in hover:border-blue-400" />
+                <a v-else :href="attUrl(selectedTask.uuid, img.name)" target="_blank"
+                  class="text-[11px] text-blue-600 bg-blue-50 rounded px-2 py-1 hover:bg-blue-100">📄 {{ img.name }}</a>
+              </template>
+            </div>
+            <div class="flex items-center gap-2 mt-1">
+              <button @click="$refs.attFile.click()" :disabled="attUploading"
+                class="text-[11px] text-gray-400 hover:text-blue-600 disabled:opacity-50">📎 {{ attUploading ? '上传中...' : '上传图片/附件' }}</button>
+              <span class="text-[10px] text-gray-300">图片仅存本机, 手机端显示文字标记</span>
+            </div>
+            <input type="file" ref="attFile" class="hidden" @change="e => { if (e.target.files[0]) uploadAttachment(e.target.files[0]); e.target.value = '' }" />
+          </div>
         </div>
         <div class="flex items-start gap-2">
           <span class="w-14 text-gray-400 shrink-0">标签</span>
@@ -512,6 +531,17 @@
             </div>
           </form>
         </div>
+      </div>
+    </Transition>
+  </Teleport>
+
+  <!-- 附件图片放大查看 (v2.5.16) -->
+  <Teleport to="body">
+    <Transition name="fade">
+      <div v-if="lightbox" @click="lightbox=null"
+        class="fixed inset-0 bg-black/70 flex items-center justify-center z-50 cursor-zoom-out">
+        <img :src="attUrl(selectedTask?.uuid, lightbox.name)" class="max-w-[92%] max-h-[92%] rounded-lg shadow-2xl" />
+        <div class="absolute bottom-6 text-white/80 text-xs">{{ lightbox.name }} (点击任意处关闭)</div>
       </div>
     </Transition>
   </Teleport>
@@ -954,6 +984,73 @@ createApp({
       }
     }
 
+    // ============================================================
+    // v2.5.16: 本地附件 — 粘贴截图/上传文件, 备注写标记, PC 渲染缩略图
+    // ============================================================
+    const attUploading = ref(false);
+    const lightbox = ref(null);
+
+    // 解析备注里的 [图片:名字] / [附件:名字] 标记
+    const noteImages = computed(() => {
+      const notes = selectedTask.value?.notes || '';
+      const out = [];
+      const re = /\[(图片|附件):([^\[\]]+)\]/g;
+      let m;
+      while ((m = re.exec(notes)) !== null) {
+        out.push({ kind: m[1], name: m[2].trim(), pos: m.index });
+      }
+      return out;
+    });
+
+    function attUrl(taskUuid, name) {
+      if (!taskUuid || !name) return '';
+      return `/api/attachments/file?task_uuid=${encodeURIComponent(taskUuid)}&name=${encodeURIComponent(name)}`;
+    }
+
+    async function uploadAttachment(file) {
+      if (!selectedTask.value || !file) return;
+      if (file.size > 20 * 1024 * 1024) { showToast({ok:false, msg:'附件超过 20MB 限制'}); return; }
+      attUploading.value = true;
+      try {
+        const b64 = await new Promise((resolve, reject) => {
+          const r = new FileReader();
+          r.onload = () => resolve(r.result.split(',')[1]);
+          r.onerror = reject;
+          r.readAsDataURL(file);
+        });
+        const res = await API('/api/attachments', {
+          method: 'POST',
+          body: JSON.stringify({ task_uuid: selectedTask.value.uuid, filename: file.name || '截图.png', data_b64: b64 }),
+        });
+        if (res.ok) {
+          const isImg = /\.(png|jpe?g|gif|webp|bmp)$/i.test(res.name);
+          const marker = `\n[${isImg ? '图片' : '附件'}:${res.name}]\n`;
+          selectedTask.value = { ...selectedTask.value, notes: (selectedTask.value.notes || '') + marker };
+          await quickModify('nt');
+          showToast({ok:true, msg:'📎 已附加: ' + res.name});
+        } else {
+          showToast({ok:false, msg: res.error || '上传失败'});
+        }
+      } catch (e) {
+        showToast({ok:false, msg:'上传失败: ' + e});
+      } finally {
+        attUploading.value = false;
+      }
+    }
+
+    // Ctrl+V 粘贴截图 → 直接作为附件上传
+    function onNotePaste(e) {
+      const items = e.clipboardData?.items || [];
+      for (const it of items) {
+        if (it.type && it.type.startsWith('image/')) {
+          e.preventDefault();
+          const f = it.getAsFile();
+          if (f) uploadAttachment(new File([f], `截图_${Date.now()}.png`, { type: it.type }));
+          return;
+        }
+      }
+    }
+
     // v2.5.7: 通用字段修改 handler
     let modifyDebounce = {};
     async function quickModify(field) {
@@ -1163,6 +1260,7 @@ createApp({
       // v2.5.7/v2.5.8 详情面板 + 状态编辑
       tagInput, ddInput, quickModify, clearDeadline, quickModifyStatus,
       cdInput, saveCreated, sortByDate, reordering,
+      attUploading, lightbox, noteImages, attUrl, uploadAttachment, onNotePaste,
       statusPopoverUuid, openStatusPopover, setStatus,
     };
   }

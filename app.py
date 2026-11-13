@@ -21,8 +21,8 @@ from urllib.parse import urlparse, parse_qs
 # ============================================================
 # 🔖 版本号 — 只改这里, 保持三处一致
 # ============================================================
-VERSION = "2.5.15"           # 内部版本 (精确到 patch)
-DISPLAY_VERSION = "2.5"      # 用户可见 (只保留前两位, 比如 "2.5" 版) — v2.5.15: 按日期排序(ix重排) + 创建日期可修改(cd) + 新建任务日期选择器修复
+VERSION = "2.5.16"           # 内部版本 (精确到 patch)
+DISPLAY_VERSION = "2.5"      # 用户可见 (只保留前两位, 比如 "2.5" 版) — v2.5.16: 备注支持粘贴截图/上传附件 (本机存储, 手机端显示文字标记)
 APP_NAME = "Things Windows"
 
 import auth_store  # noqa: E402  — 安全凭证存储 (DPAPI + 设备指纹 + 2FA)
@@ -121,6 +121,49 @@ def _save_pins(uuids: list):
         json.dump(uuids, f, ensure_ascii=False)
 
 
+# ============================================================
+# 本地附件库 (v2.5.16) — Things 协议备注(nt)是纯文本, 无附件实体;
+# 图片/文件存本机磁盘, 备注里写 [图片:名字]/[附件:名字] 标记随文本同步。
+# 手机端只能看到标记文字 (协议限制), PC 端渲染成缩略图。
+# ============================================================
+
+import base64 as _b64
+import re as _re
+
+
+def _attachments_dir() -> str:
+    d = os.path.join(os.environ.get("APPDATA", _LOG_DIR), "ThingsWindows", "attachments")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _sanitize_task_uuid(u: str) -> str:
+    return _re.sub(r"[^0-9a-fA-F-]", "", str(u))[:40]
+
+
+def _sanitize_filename(name: str) -> str:
+    name = os.path.basename(str(name)).strip()
+    name = _re.sub(r'[\\/:*?"<>|\r\n]', "_", name)
+    return name[:120] or "未命名"
+
+
+def _attachment_path(task_uuid: str, name: str) -> str:
+    d = os.path.join(_attachments_dir(), _sanitize_task_uuid(task_uuid))
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, _sanitize_filename(name))
+
+
+def _save_attachment(task_uuid: str, filename: str, data_b64: str) -> str:
+    """保存 base64 附件, 返回清理后的文件名。"""
+    name = _sanitize_filename(filename)
+    raw = _b64.b64decode(data_b64)
+    if len(raw) > 20 * 1024 * 1024:
+        raise ValueError("附件超过 20MB 限制")
+    with open(_attachment_path(task_uuid, name), "wb") as f:
+        f.write(raw)
+    return name
+
+
 def _get_things() -> Things:
     with _session_lock:
         if "things" not in _session:
@@ -207,6 +250,30 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/pins":
                 # v2.5.12: 置顶列表 (磁盘持久化, 重启不丢)
                 self._send_json({"ok": True, "pinned": _load_pins()})
+
+            elif path == "/api/attachments/file":
+                # v2.5.16: 读取附件原文件 (缩略图/下载, 同源相对路径)
+                try:
+                    tu = _sanitize_task_uuid((qs.get("task_uuid") or [""])[0])
+                    name = _sanitize_filename((qs.get("name") or [""])[0])
+                    fpath = _attachment_path(tu, name)
+                    if not tu or not os.path.isfile(fpath):
+                        self._send_error("附件不存在", 404)
+                        return
+                    ext = os.path.splitext(fpath)[1].lower()
+                    mime = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                            ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+                            ".pdf": "application/pdf"}.get(ext, "application/octet-stream")
+                    with open(fpath, "rb") as f:
+                        body = f.read()
+                    self.send_response(200)
+                    self.send_header("Content-Type", mime)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Cache-Control", "max-age=3600")
+                    self.end_headers()
+                    self.wfile.write(body)
+                except Exception as e:
+                    self._send_error(str(e), 500)
 
             elif path == "/api/tasks/all":
                 t = _get_things()
@@ -530,6 +597,15 @@ class Handler(BaseHTTPRequestHandler):
                 uuids = body.get("uuids", [])
                 n = reorder_tasks(t, uuids)
                 self._send_json({"ok": True, "reordered": n})
+
+            elif path == "/api/attachments":
+                # v2.5.16: 上传附件 (base64), 存本地; 备注标记由前端拼
+                # 注意: body 已在 do_POST 开头读过, 不能再调 _read_body (rfile 已耗尽会阻塞)
+                try:
+                    name = _save_attachment(body.get("task_uuid", ""), body.get("filename", ""), body.get("data_b64", ""))
+                    self._send_json({"ok": True, "name": name})
+                except Exception as e:
+                    self._send_error(f"附件保存失败: {e}", 400)
 
             elif path == "/api/dedupe/apply":
                 t = _get_things()

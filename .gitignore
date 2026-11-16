@@ -17,6 +17,7 @@ lic_secret.py
 
 # PyArmor 混淆输出
 obf/
+obf_gui/
 pyarmor.bug.log
 
 # Python

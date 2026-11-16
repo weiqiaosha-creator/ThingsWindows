@@ -21,8 +21,8 @@ from urllib.parse import urlparse, parse_qs
 # ============================================================
 # 🔖 版本号 — 只改这里, 保持三处一致
 # ============================================================
-VERSION = "2.5.16"           # 内部版本 (精确到 patch)
-DISPLAY_VERSION = "2.5"      # 用户可见 (只保留前两位, 比如 "2.5" 版) — v2.5.16: 备注支持粘贴截图/上传附件 (本机存储, 手机端显示文字标记)
+VERSION = "2.5.17"           # 内部版本 (精确到 patch)
+DISPLAY_VERSION = "2.5"      # 用户可见 (只保留前两位, 比如 "2.5" 版) — v2.5.17: 修复 PC 写坏备注格式导致手机闪崩 (nt 富文本对象 + 时间戳整数化)
 APP_NAME = "Things Windows"
 
 import auth_store  # noqa: E402  — 安全凭证存储 (DPAPI + 设备指纹 + 2FA)
@@ -780,7 +780,7 @@ def modify_task_fields(things: Things, uuid: str, fields: dict) -> dict:
       dd       → 效期 (str YYYY-MM-DD | None=清空 | ""=清空)
     返回 {ok: bool, changed: list[str]}
     """
-    from things_cloud import _things_now, _date_to_ts
+    from things_cloud import _things_now, _date_to_ts, notes_to_cloud
 
     if not fields:
         return {"ok": False, "changed": []}
@@ -803,10 +803,11 @@ def modify_task_fields(things: Things, uuid: str, fields: dict) -> dict:
             p["ti"] = val   # 双写, Things Cloud 兼容
             changed.append("title")
 
-    # 备注
+    # 备注 (v2.5.17: 必须包装成官方富文本对象 {"_t":"tx","t":1,"v":...},
+    # 纯字符串会导致 iPhone 端解码失败闪崩)
     if "nt" in fields:
         val = fields["nt"] or ""
-        p["nt"] = val
+        p["nt"] = notes_to_cloud(val)
         changed.append("notes")
 
     # 标签 (中文名列表 → UUID 列表)

@@ -186,21 +186,23 @@ def validate_uuid(s: str) -> bool:
 # 例如: cd=1495662927.014228, sr=1495584000, tir=1495584000
 # =====================================================================
 
-def _things_now() -> float:
-    """Things Cloud 使用的秒级 Unix 时间戳 (UTC, 带小数)。"""
-    return datetime.now(timezone.utc).timestamp()
+def _things_now() -> int:
+    """Things Cloud 使用的秒级 Unix 时间戳 (UTC)。
+    v2.5.17: 改为整数 — 官方客户端全部用 int, 浮点可能导致 iOS 端解码异常。"""
+    return int(datetime.now(timezone.utc).timestamp())
 
 
-def _date_to_ts(ymd: str) -> float:
+def _date_to_ts(ymd: str) -> int:
     """
     将 YYYY-MM-DD 转换为 Things Cloud 使用的秒级时间戳。
     v2.5.13: 对齐官方客户端口径 — 日期统一存 UTC 零点。
     实测: 北京用户手机上排"2026-11-09", 官方写 sr=1794182400 (=UTC 零点, 北京 08:00)。
     旧版写本地零点, 与官方差 8 小时。
+    v2.5.17: 返回 int (官方为 i64, 浮点可能触发 iOS 解码异常)。
     """
     dt = datetime.strptime(ymd, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
-    return float((dt - epoch).total_seconds())
+    return int((dt - epoch).total_seconds())
 
 
 def _resolve_when(when: str) -> tuple[int, float | None]:
@@ -480,7 +482,7 @@ def build_task6_create_payload(
     }
 
     if notes:
-        payload["nt"] = notes
+        payload["nt"] = notes_to_cloud(notes)
 
     if sr_ts is not None:
         payload["sr"] = int(sr_ts)   # Rust 里是 Option<i64>
@@ -491,7 +493,7 @@ def build_task6_create_payload(
 
     if deadline:
         try:
-            payload["dd"] = float(_date_to_ts(deadline))  # Rust 是 f64
+            payload["dd"] = int(_date_to_ts(deadline))
         except ValueError:
             pass
 
@@ -707,6 +709,45 @@ class Things:
 # 状态重建 (从 history items 构建当前任务列表)
 # ============================================================
 
+# ============================================================
+# 备注字段 (nt) 读写 — 官方富文本格式 (v2.5.17 修复手机闪崩)
+#
+# 官方 nt 是富文本对象, 不是纯字符串:
+#   简单文本: {"_t": "tx", "t": 1, "ch": <光标>, "v": "文本"}
+#   富文本:   {"_t": "tx", "t": 2, "ps": [{"r": "段落", ...}, ...]}
+# PC 旧版把纯字符串/Python dict repr 直接提交云端 → iOS 解码失败 → 闪崩。
+# ============================================================
+
+def notes_from_cloud(v) -> str:
+    """云端 nt → 纯文本 (显示/编辑用)。兼容 dict / JSON 字符串 / 脏数据。"""
+    if v is None:
+        return ""
+    if isinstance(v, dict):
+        if v.get("t") == 2 and isinstance(v.get("ps"), list):
+            parts = []
+            for seg in v["ps"]:
+                if isinstance(seg, dict):
+                    parts.append(str(seg.get("r", "")))
+            return "\n".join(p for p in parts if p)
+        return str(v.get("v", ""))
+    if isinstance(v, str):
+        s = v.strip()
+        if s.startswith("{") and s.endswith("}"):
+            try:
+                d = json.loads(s)
+                if isinstance(d, dict):
+                    return notes_from_cloud(d)
+            except Exception:
+                pass
+        return v
+    return str(v)
+
+
+def notes_to_cloud(text: str) -> dict:
+    """纯文本 → 官方 nt 富文本对象 (t=1 简单文本格式)。"""
+    return {"_t": "tx", "t": 1, "ch": 0, "v": str(text or "")}
+
+
 def _rebuild_state(items: list[dict]) -> list[dict]:
     """
     将 history items 重建为**完整**的当前任务状态快照。
@@ -894,7 +935,7 @@ def _format_task_full(raw: dict, *, tag_map: dict[str, str] | None = None,
         "uuid": raw["uuid"],
         "kind": raw["kind"],
         "title": _safe_str(p.get("tt") or p.get("ti"), "(no title)"),
-        "notes": _safe_str(p.get("nt"), ""),
+        "notes": notes_from_cloud(p.get("nt")),
         "status": ss,
         "human_status": human_status,
         "trashed": tr,

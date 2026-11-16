@@ -21,8 +21,8 @@ from urllib.parse import urlparse, parse_qs
 # ============================================================
 # 🔖 版本号 — 只改这里, 保持三处一致
 # ============================================================
-VERSION = "2.5.18"           # 内部版本 (精确到 patch)
-DISPLAY_VERSION = "2.5"      # 用户可见 (只保留前两位, 比如 "2.5" 版) — v2.5.18: nt.ch=CRC32 校验和修正 (ch=0 配非空文本导致 iPhone 编辑备注闪退)
+VERSION = "2.5.19"           # 内部版本 (精确到 patch)
+DISPLAY_VERSION = "2.5"      # 用户可见 (只保留前两位, 比如 "2.5" 版) — v2.5.19: 取消任务补 sp 终止日期 (手机端自动隐藏依赖 sp, 缺失则一直显示✕)
 APP_NAME = "Things Windows"
 
 import auth_store  # noqa: E402  — 安全凭证存储 (DPAPI + 设备指纹 + 2FA)
@@ -662,7 +662,8 @@ def mark_task_status(things: Things, uuid: str, new_status: int) -> bool:
     Things Cloud Task6 modify payload 必须带:
       - ss: 新状态
       - md: 修改日期 (秒级 Unix 时间戳)
-      - sp: 完成日期 (仅 completed 时需要)
+      - sp: 终止日期 (completed/canceled 都要 — 手机端"自动隐藏"依赖 sp,
+             缺 sp 的取消任务会一直显示在手机列表里, v2.5.19 修复)
     """
     from things_cloud import SS_COMPLETED, SS_CANCELED, _things_now
 
@@ -672,8 +673,8 @@ def mark_task_status(things: Things, uuid: str, new_status: int) -> bool:
         "ss": new_status,
         "md": now_ts,
     }
-    # completed 时带 sp (completion date)
-    if new_status == SS_COMPLETED:
+    # completed / canceled 都带 sp (终止日期, 官方协议)
+    if new_status in (SS_COMPLETED, SS_CANCELED):
         p["sp"] = now_ts
 
     if things._head_index is None:

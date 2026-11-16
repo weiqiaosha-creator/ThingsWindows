@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import uuid as uuid_mod
+import zlib
 from datetime import datetime, timezone, timedelta
 
 import requests
@@ -744,8 +745,11 @@ def notes_from_cloud(v) -> str:
 
 
 def notes_to_cloud(text: str) -> dict:
-    """纯文本 → 官方 nt 富文本对象 (t=1 简单文本格式)。"""
-    return {"_t": "tx", "t": 1, "ch": 0, "v": str(text or "")}
+    """纯文本 → 官方 nt 富文本对象 (t=1 简单文本格式)。
+    v2.5.18: ch = CRC32(v 的 UTF-8 字节), 官方协议校验字段 —
+    写 0 配非空文本会导致 iPhone 打开/编辑备注时校验失败闪退。"""
+    v = str(text or "")
+    return {"_t": "tx", "t": 1, "ch": zlib.crc32(v.encode("utf-8")) & 0xFFFFFFFF, "v": v}
 
 
 def _rebuild_state(items: list[dict]) -> list[dict]:

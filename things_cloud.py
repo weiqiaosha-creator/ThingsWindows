@@ -215,7 +215,10 @@ def _resolve_when(when: str) -> tuple[int, float | None]:
     today = datetime.now()
     if when in ("inbox", None):
         return ST_INBOX, None
-    elif when in ("anytime", "Today", "today", "evening", "This Evening"):
+    elif when == "anytime":
+        # v2.5.21: 纯"随时" (st=1 无日期) — 以前误当"今天"处理, 导致没法建纯随时任务
+        return ST_ANYTIME, None
+    elif when in ("today", "Today", "evening", "This Evening"):
         return ST_ANYTIME, _date_to_ts(today.strftime("%Y-%m-%d"))
     elif when in ("tomorrow",):
         tmr = today + timedelta(days=1)

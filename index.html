@@ -414,7 +414,7 @@
             <button v-for="m in ['inbox','today','tomorrow','anytime','someday']" :key="m"
               @click="moveSelected(m)"
               class="px-2 py-0.5 text-[11px] rounded border transition"
-              :class="selectedTask.schedule === ({inbox:'inbox',today:'anytime',tomorrow:'someday',anytime:'anytime',someday:'someday'}[m]) ? 'bg-blue-100 border-blue-300 text-blue-700' : 'border-gray-200 text-gray-500 hover:bg-blue-50 hover:text-blue-600'">
+              :class="whenActive(m) ? 'bg-blue-100 border-blue-300 text-blue-700' : 'border-gray-200 text-gray-500 hover:bg-blue-50 hover:text-blue-600'">
               {{ {inbox:'📥收件箱',today:'📅今天',tomorrow:'⏰明天',anytime:'📆随时',someday:'📋以后'}[m] }}
             </button>
           </div>
@@ -506,6 +506,7 @@
                 <option value="today">今天</option>
                 <option value="evening">今天晚上</option>
                 <option value="tomorrow">明天</option>
+                <option value="anytime">随时</option>
                 <option value="someday">某天再说</option>
                 <option value="custom">指定日期...</option>
               </select>
@@ -518,8 +519,16 @@
               <input type="date" v-model="newForm.customDate"
                 class="flex-1 px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:border-blue-500 text-sm">
             </div>
-            <input v-model="newForm.tags" placeholder="标签 (逗号分隔, 可选)"
+            <input v-model="newForm.tags" placeholder="标签 (点选下方已有标签, 或直接输入)"
               class="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:border-blue-500">
+            <!-- v2.5.21: 已有标签点选 -->
+            <div v-if="tags.length" class="flex flex-wrap gap-1">
+              <button type="button" v-for="tg in tags" :key="tg.tag" @click="toggleNewTag(tg.tag)"
+                class="px-2 py-0.5 rounded-full text-xs border transition"
+                :class="newTagActive(tg.tag) ? 'bg-blue-600 border-blue-600 text-white' : 'bg-gray-50 border-gray-200 text-gray-600 hover:border-blue-300'">
+                🏷 {{ tg.tag }}
+              </button>
+            </div>
             <textarea v-model="newForm.notes" placeholder="备注 (可选)" rows="3"
               class="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:border-blue-500 resize-none"></textarea>
             <div class="flex justify-end gap-2 pt-2">
@@ -864,6 +873,36 @@ createApp({
         showToast({ok: false, msg: res.error || '添加失败'});
       }
     }
+
+    // v2.5.21: 分类按钮高亮 — 按协议语义区分 今天/随时
+    // (st=1 + sr≤今天 = 今天; st=1 无日期 = 随时; st=2 = 以后/明天), 旧逻辑只比对 schedule 导致"今天/随时"双双高亮
+    function localDateStr(offsetDays = 0) {
+      const d = new Date(); d.setDate(d.getDate() + offsetDays);
+      const p = (n) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    }
+    function whenActive(m) {
+      const t = selectedTask.value; if (!t) return false;
+      const today = localDateStr();
+      const sr = t.scheduled_date || '';
+      switch (m) {
+        case 'inbox': return t.st_code === 0;
+        case 'today': return t.st_code !== 0 && !!sr && sr <= today;
+        case 'tomorrow': return sr === localDateStr(1);
+        case 'anytime': return t.st_code === 1 && !sr;
+        case 'someday': return t.st_code === 2 && (!sr || sr > today);
+        default: return false;
+      }
+    }
+    // v2.5.21: 新建任务 — 已有标签点选
+    function parseTagStr(s) { return (s || '').split(/[,,]/).map(x => x.trim()).filter(Boolean); }
+    function toggleNewTag(name) {
+      const cur = parseTagStr(newForm.value.tags);
+      const i = cur.indexOf(name);
+      if (i >= 0) cur.splice(i, 1); else cur.push(name);
+      newForm.value.tags = cur.join(', ');
+    }
+    function newTagActive(name) { return parseTagStr(newForm.value.tags).includes(name); }
 
     // v2.5.8: 状态 popover (圆圈点击弹出 3 选 1)
     const statusPopoverUuid = ref(null);
@@ -1259,7 +1298,7 @@ createApp({
       pinnedUuids, togglePin, isPinned, displayTasks, tags, activeTag, switchTag,
       // v2.5.7/v2.5.8 详情面板 + 状态编辑
       tagInput, ddInput, quickModify, clearDeadline, quickModifyStatus,
-      cdInput, saveCreated, sortByDate, reordering,
+      cdInput, saveCreated, sortByDate, reordering, whenActive, toggleNewTag, newTagActive,
       attUploading, lightbox, noteImages, attUrl, uploadAttachment, onNotePaste,
       statusPopoverUuid, openStatusPopover, setStatus,
     };

@@ -1118,14 +1118,17 @@ def filter_tasks(tasks: list[dict], *, only_pending: bool = True,
 
         result.append(t)
 
-    # 排序: 最新日期在最上面
-    # (1) 有 scheduled_ms 的按 scheduled_ms 倒序
-    # (2) 无 scheduled_ms 的按 created_ms 倒序 (排在有日期的后面)
-    # (3) 同层级按 uuid (FIFO 稳定)
+    # 排序: 对齐官方客户端语义 (v2.5.20)
+    # (1) 组内按 ix 升序 — 官方客户端/手机端都按 ix 升序展示, "按日期排序"按钮
+    #     重写的 ix 借此在 PC 端立即生效 (旧版 PC 固定按日期倒序, 不看 ix, 导致重排后显示不变)
+    # (2) ix 缺失或相同 (如旧版 PC 任务全是 ix=0) 时退回原规则:
+    #     scheduled_ms 倒序 → created_ms 倒序 → uuid (FIFO 稳定)
     result.sort(key=lambda t: (
+        t.get("ix") if isinstance(t.get("ix"), (int, float)) else 0,
         t.get("scheduled_ms") if t.get("scheduled_ms") is not None else 0,
         t.get("created_ms") or 0,
-    ), reverse=True)
+        t.get("uuid") or "",
+    ))
     return result
 
 

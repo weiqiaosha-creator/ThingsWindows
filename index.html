@@ -974,7 +974,7 @@ createApp({
         const list = [...tasks.value].sort((a, b) => (dateOf(b) || '').localeCompare(dateOf(a) || ''));
         const res = await API('/api/reorder', { method: 'POST', body: JSON.stringify({ uuids: list.map(t => t.uuid) }) });
         if (res.ok) {
-          showToast({ok:true, msg:`📅 已按日期重排 ${res.reordered} 条 (手机端同步生效)`});
+          showToast({ok:true, msg:`📅 已按日期重排 ${res.reordered} 条 (PC + 手机端同步生效)`});
           fetchTasks();
         } else {
           showToast({ok:false, msg: res.error || '排序失败'});

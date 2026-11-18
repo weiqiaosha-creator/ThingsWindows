@@ -561,6 +561,40 @@ class Things:
             self.history_key = info["history-key"]
         self._head_index = None
         self._tasks = None
+        self._tag_map: dict[str, str] = {}   # v2.5.22: Tag4 uuid -> 标签名 (重建时更新)
+
+    def _ensure_tag_uuids(self, tag_names) -> tuple[list, list]:
+        """
+        v2.5.22: 标签名 → Tag4 UUID 列表。
+        官方协议 tg 字段只能放 Tag4 实体的 Base58 UUID —— PC 以前直接写中文名,
+        iPhone 把中文名当 UUID 解析 → 闪退 (根因)。
+        不存在的标签自动创建 Tag4 实体 (与官方行为一致)。
+        返回 (uuid 列表, 需要随任务一并提交的 Tag4 创建 items)。
+        """
+        tag_map = self._tag_map
+        name2uuid = {name: u for u, name in tag_map.items()}
+        uuids: list = []
+        new_items: list = []
+        for name in tag_names or []:
+            name = str(name).strip()
+            if not name:
+                continue
+            u = name2uuid.get(name)
+            if u:
+                uuids.append(u)
+                continue
+            u = new_uuid()
+            # 字段格式照抄官方 Tag4 创建 payload (ix/pn/sh/xx), 避免 iPhone 解析异常
+            new_items.append({
+                "uuid": u, "e": KIND_TAG, "t": ACTION_CREATED,
+                "p": {"tt": name, "ix": 0, "pn": [], "sh": None,
+                      "xx": {"sn": {}, "_t": "oo"},
+                      "cd": _things_now(), "md": _things_now()},
+            })
+            tag_map[u] = name
+            name2uuid[name] = u
+            uuids.append(u)
+        return uuids, new_items
 
     # ---------- 写入 ----------
 
@@ -604,10 +638,14 @@ class Things:
         返回新任务的 UUID。
         """
         task_uuid = new_uuid()
+        # v2.5.22: 标签名 → Tag4 UUID (官方协议 tg 只放 UUID, 中文名会让 iPhone 闪退)
+        tag_uuids, tag_items = self._ensure_tag_uuids(tags)
         payload = build_task6_payload(
             title=title, notes=notes, when=when,
-            deadline=deadline, tags=tags, project_uuid=project_uuid,
+            deadline=deadline, tags=None, project_uuid=project_uuid,
         )
+        if tag_uuids:
+            payload["tg"] = tag_uuids
         # v2.5.12: 按官方规则分配排序位 (新任务置顶)
         st_new, _sr_new = _resolve_when(when)
         payload["ix"] = self._compute_new_sort_index(st_new, project_uuid)
@@ -616,7 +654,7 @@ class Things:
         head = self.client.get_history_head(self.history_key)
         ancestor = head.get("latest-server-index", 0)
 
-        items = [{
+        items = tag_items + [{
             "uuid": task_uuid,
             "e": KIND_TASK6,
             "t": ACTION_CREATED,
@@ -645,12 +683,12 @@ class Things:
                 )
                 # 如果是全量 (第一次), 直接重建; 否则增量 merge
                 if self._head_index is None:
-                    self._tasks = _rebuild_state(raw_items)
+                    self._tasks = _rebuild_state(raw_items, tag_map_out=self._tag_map)
                 else:
                     # 增量: 把新 items 合并到旧 state 里重建 (简单可靠)
                     # 把旧缓存转成原始 items 不方便, 直接全量重建
                     all_raw, _ = self.client.sync_history_items(self.history_key, 0)
-                    self._tasks = _rebuild_state(all_raw)
+                    self._tasks = _rebuild_state(all_raw, tag_map_out=self._tag_map)
                 self._head_index = cloud_head
         except Exception as e:
             # 网络错误不影响使用 — 继续用旧缓存
@@ -661,7 +699,7 @@ class Things:
         """从云端拉取所有任务状态 (从 0 开始重建)。"""
         raw_items, head = self.client.sync_history_items(self.history_key, 0)
         self._head_index = head
-        self._tasks = _rebuild_state(raw_items)
+        self._tasks = _rebuild_state(raw_items, tag_map_out=self._tag_map)
         return self._tasks
 
     def get_all_tasks(self) -> list[dict]:
@@ -755,13 +793,14 @@ def notes_to_cloud(text: str) -> dict:
     return {"_t": "tx", "t": 1, "ch": zlib.crc32(v.encode("utf-8")) & 0xFFFFFFFF, "v": v}
 
 
-def _rebuild_state(items: list[dict]) -> list[dict]:
+def _rebuild_state(items: list[dict], *, tag_map_out: dict | None = None) -> list[dict]:
     """
     将 history items 重建为**完整**的当前任务状态快照。
     包括所有状态: 待办 / 已完成 / 已取消 / 已删除。
 
     重要: 第一遍先扫 Tag4 / Area3 实体检出 {uuid: 中文名} 映射,
           第二遍处理 Task*, 格式化时把 tg/pr/ar 的 UUID 翻译成中文。
+    tag_map_out: v2.5.22 — 传入 dict 时把 {uuid: 标签名} 写进去 (供写操作做 名字→UUID 映射)。
     """
     # ---------- 第一遍: 扫 Tag4 / Area3, 构建名字映射 ----------
     tag_map: dict[str, str] = {}       # Tag4 uuid -> 标签中文名
@@ -803,6 +842,9 @@ def _rebuild_state(items: list[dict]) -> list[dict]:
             tag_map[uuid] = name
         elif kind == KIND_AREA and name:
             area_map[uuid] = name
+
+    if tag_map_out is not None:
+        tag_map_out.update(tag_map)
 
     _log.debug(f"[rebuild] tag_map={len(tag_map)} area_map={len(area_map)}")
 

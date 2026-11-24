@@ -531,6 +531,11 @@
             </div>
             <textarea v-model="newForm.notes" placeholder="备注 (可选)" rows="3"
               class="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:border-blue-500 resize-none"></textarea>
+            <!-- v2.5.23: 创建时直接置顶 -->
+            <label class="flex items-center gap-2 text-sm text-gray-600 cursor-pointer select-none">
+              <input type="checkbox" v-model="newForm.pinned" class="w-4 h-4 accent-blue-600">
+              📌 创建后立即置顶
+            </label>
             <div class="flex justify-end gap-2 pt-2">
               <button type="button" @click="showAddModal=false" class="px-4 py-2 rounded-lg border border-gray-200 hover:bg-gray-50 text-sm">取消</button>
               <button type="submit" :disabled="loading"
@@ -655,7 +660,7 @@ createApp({
     const selectedTask = ref(null);
 
     const showAddModal = ref(false);
-    const newForm = ref({ title: '', when: '', deadline: '', tags: '', notes: '', customDate: '' });
+    const newForm = ref({ title: '', when: '', deadline: '', tags: '', notes: '', customDate: '', pinned: false });
     const toast = ref(null);
     const dedupPlan = ref(null);
 
@@ -866,8 +871,16 @@ createApp({
       loading.value = false;
       if (res.ok) {
         showAddModal.value = false;
-        newForm.value = { title: '', when: '', deadline: '', tags: '', notes: '', customDate: '' };
-        showToast({ok: true, msg: '✅ 已添加'});
+        const wasPinned = newForm.value.pinned;
+        newForm.value = { title: '', when: '', deadline: '', tags: '', notes: '', customDate: '', pinned: false };
+        // v2.5.23: 创建时勾选了置顶 → 立即加入置顶列表 (PC 本地 pins.json)
+        if (wasPinned && res.uuid) {
+          pinnedUuids.value.add(res.uuid);
+          await API('/api/pins', { method: 'POST', body: JSON.stringify({ uuids: [...pinnedUuids.value] }) });
+          showToast({ok: true, msg: '✅ 已添加并置顶'});
+        } else {
+          showToast({ok: true, msg: '✅ 已添加'});
+        }
         fetchTasks();
       } else {
         showToast({ok: false, msg: res.error || '添加失败'});

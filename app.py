@@ -21,8 +21,8 @@ from urllib.parse import urlparse, parse_qs
 # ============================================================
 # 🔖 版本号 — 只改这里, 保持三处一致
 # ============================================================
-VERSION = "2.5.27"           # 内部版本 (精确到 patch)
-DISPLAY_VERSION = "2.5"      # 用户可见 (只保留前两位, 比如 "2.5" 版) — v2.5.27: 内容没变化的修改请求直接丢弃(前后端双保险), 旧实例/绑定失效窗口的旧值永远无法覆盖新修改
+VERSION = "2.5.28"           # 内部版本 (精确到 patch)
+DISPLAY_VERSION = "2.5"      # 用户可见 (只保留前两位, 比如 "2.5" 版) — v2.5.28: 空修改(内容与当前一致)返回成功, 修复 v2.5.27 引入的"保存失败"误报
 APP_NAME = "Things Windows"
 
 import auth_store  # noqa: E402  — 安全凭证存储 (DPAPI + 设备指纹 + 2FA)
@@ -804,7 +804,9 @@ def modify_task_fields(things: Things, uuid: str, fields: dict) -> dict:
         fields.pop("dd")
 
     if not fields:
-        return {"ok": False, "changed": []}
+        # v2.5.28: 全部字段与当前值相同 → 正常返回 (空操作是成功, 不是失败;
+        # 此前返回 ok:False 导致界面弹"保存失败"误报)
+        return {"ok": True, "changed": []}
 
     if things._head_index is None:
         head = things.client.get_history_head(things.history_key)

@@ -450,7 +450,7 @@
             <div class="flex flex-wrap gap-1 mb-1" v-if="(selectedTask.tags||[]).length">
               <span v-for="tg in selectedTask.tags" :key="tg" class="tag">{{ tg }}</span>
             </div>
-            <input v-model="tagInput" @blur="quickModify('tg')" @keyup.enter="quickModify('tg')"
+            <input v-model="tagInput" @focus="tagFocusVal = tagInput" @blur="quickModify('tg')" @keyup.enter="quickModify('tg')"
               placeholder="逗号分隔, 如: 工作,办公,重要"
               class="w-full text-xs px-2 py-1 border border-gray-200 rounded focus:outline-none focus:border-blue-400" />
           </div>
@@ -973,6 +973,7 @@ createApp({
 
     // v2.5.7: 详情面板字段编辑 —— tagInput / ddInput 与 selectedTask 双向同步
     const tagInput = ref('');
+    const tagFocusVal = ref('');   // v2.5.25: 聚焦时的值 — 判断用户是否真的输入过
     const ddInput = ref('');
     const cdInput = ref('');   // v2.5.15: 创建日期可编辑
     // 选中新任务时, 同步标签串和效期
@@ -1121,7 +1122,13 @@ createApp({
         if (field === 'tg') {
           const old = (selectedTask.value.tags || []).join(',');
           const now = (body.tg || []).join(',');
-          if (old === now) return;
+          if (old === now) {
+            // v2.5.25: 用户确实输入了但内容没生效 → 输入框绑定失效 (WebView2 长会话/输入法冲突), 明确提示而非静默跳过
+            if (tagInput.value !== tagFocusVal.value) {
+              showToast({ok: false, msg: '⚠️ 标签输入未生效 — 输入框可能没收到键盘输入, 请重启应用或切换输入法'});
+            }
+            return;
+          }
         }
         if (field === 'dd' && (selectedTask.value.deadline_date || '') === (body.dd || '')) return;
         const res = await API('/api/tasks/modify', { method: 'POST', body: JSON.stringify(body) });
@@ -1310,7 +1317,7 @@ createApp({
       // 置顶 & 标签
       pinnedUuids, togglePin, isPinned, displayTasks, tags, activeTag, switchTag,
       // v2.5.7/v2.5.8 详情面板 + 状态编辑
-      tagInput, ddInput, quickModify, clearDeadline, quickModifyStatus,
+      tagInput, tagFocusVal, ddInput, quickModify, clearDeadline, quickModifyStatus,
       cdInput, saveCreated, sortByDate, reordering, whenActive, toggleNewTag, newTagActive,
       attUploading, lightbox, noteImages, attUrl, uploadAttachment, onNotePaste,
       statusPopoverUuid, openStatusPopover, setStatus,

@@ -44,6 +44,10 @@ else:
 
 BACKEND_PORT = 55234
 
+# v2.5.24: 后端实际监听端口由线程回填 (此前 main() 只盲探 5 个端口,
+# 而 _try_bind 会尝试 20 个 — 后端落到 55239+ 时窗口直接静默退出)
+_backend_port_holder = {"port": None, "error": None}
+
 
 def start_backend_thread(port: int = BACKEND_PORT) -> None:
     """在守护线程里启动 app.py 的 HTTP server。"""
@@ -56,29 +60,27 @@ def start_backend_thread(port: int = BACKEND_PORT) -> None:
             if actual_port != port:
                 print(f"[backend] 端口 {port} 被占用, 实际使用 {actual_port}")
             webapp.DEFAULT_PORT = actual_port  # 同步更新
+            _backend_port_holder["port"] = actual_port
             print(f"[backend] HTTP 服务启动 → http://localhost:{actual_port}")
             server.serve_forever()
         except Exception as e:
+            _backend_port_holder["error"] = str(e)
             print(f"[backend] ❌ 启动失败: {e}")
 
     t = threading.Thread(target=_run, daemon=True, name="ThingsBackend")
     t.start()
 
 
-def wait_for_backend(port: int = BACKEND_PORT, timeout: float = 10.0) -> bool:
-    """等待后端就绪。"""
-    import urllib.request
+def wait_for_backend(timeout: float = 20.0) -> int | None:
+    """等待后端就绪, 返回实际端口 (失败返回 None)。"""
     deadline = time.time() + timeout
-    # 端口可能被占用后自动 +1, 所以遍历几个端口
-    for p in range(port, port + 5):
-        deadline2 = time.time() + timeout / 5
-        while time.time() < deadline2:
-            try:
-                urllib.request.urlopen(f"http://127.0.0.1:{p}/api/health", timeout=1)
-                return True
-            except Exception:
-                time.sleep(0.3)
-    return False
+    while time.time() < deadline:
+        if _backend_port_holder["port"]:
+            return _backend_port_holder["port"]
+        if _backend_port_holder["error"]:
+            return None
+        time.sleep(0.2)
+    return None
 
 
 def main():
@@ -92,21 +94,11 @@ def main():
     # 1. 启动后端线程
     start_backend_thread(BACKEND_PORT)
 
-    # 2. 等待就绪
-    if not wait_for_backend(BACKEND_PORT, timeout=15):
-        print("[main] ❌ 后端启动超时, 退出")
+    # 2. 等待就绪 (直接读线程回填的实际端口, 不再盲猜)
+    actual_port = wait_for_backend(timeout=20)
+    if not actual_port:
+        print("[main] ❌ 后端启动超时或失败, 退出")
         return
-
-    # 3. 找实际端口 (可能被 +1)
-    import urllib.request
-    actual_port = BACKEND_PORT
-    for p in range(BACKEND_PORT, BACKEND_PORT + 5):
-        try:
-            urllib.request.urlopen(f"http://127.0.0.1:{p}/api/health", timeout=1)
-            actual_port = p
-            break
-        except Exception:
-            continue
 
     url = f"http://localhost:{actual_port}/?v={webapp.VERSION}"
     print(f"[main] ✅ 后端就绪: {url}")

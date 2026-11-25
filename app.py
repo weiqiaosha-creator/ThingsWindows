@@ -21,8 +21,8 @@ from urllib.parse import urlparse, parse_qs
 # ============================================================
 # 🔖 版本号 — 只改这里, 保持三处一致
 # ============================================================
-VERSION = "2.5.23"           # 内部版本 (精确到 patch)
-DISPLAY_VERSION = "2.5"      # 用户可见 (只保留前两位, 比如 "2.5" 版) — v2.5.23: 新建任务弹窗增加"创建后立即置顶"勾选 (PC 本地置顶机制)
+VERSION = "2.5.24"           # 内部版本 (精确到 patch)
+DISPLAY_VERSION = "2.5"      # 用户可见 (只保留前两位, 比如 "2.5" 版) — v2.5.24: 空标题拦截(输入失效时不再污染云端)+EXE后端端口探测修正(不再静默退出)
 APP_NAME = "Things Windows"
 
 import auth_store  # noqa: E402  — 安全凭证存储 (DPAPI + 设备指纹 + 2FA)
@@ -517,8 +517,13 @@ class Handler(BaseHTTPRequestHandler):
 
             elif path == "/api/tasks":
                 t = _get_things()
+                _title_in = body.get("title", "").strip()
+                if not _title_in:
+                    # v2.5.24: 空标题拦截 — 窗口输入失效时曾连续产生 5 条空任务污染云端
+                    self._send_error("标题不能为空（输入框可能没有收到文字，请重启应用或切换输入法后重试）")
+                    return
                 uuid = t.add_task(
-                    title=body.get("title", "").strip(),
+                    title=_title_in,
                     notes=body.get("notes") or None,
                     when=body.get("when") or None,
                     deadline=body.get("deadline") or None,

@@ -83,6 +83,22 @@ def wait_for_backend(timeout: float = 20.0) -> int | None:
     return None
 
 
+def _already_running() -> bool:
+    """v2.5.26: 单实例保护 — 探测是否已有本应用在运行。
+    双实例会各自持有独立缓存, 互相把对方的修改覆盖回去 (改了又被改回原状的元凶)。"""
+    import json as _json
+    import urllib.request
+    for p in range(BACKEND_PORT, BACKEND_PORT + 20):
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{p}/api/health", timeout=0.6) as resp:
+                info = _json.loads(resp.read().decode())
+            if info.get("app_name") == "Things Windows" and info.get("ok"):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def main():
     import webview
     import app as webapp  # 拿到版本号常量
@@ -90,6 +106,21 @@ def main():
     print("=" * 50)
     print(f"  Things Windows v{webapp.DISPLAY_VERSION} —— 原生桌面版")
     print("=" * 50)
+
+    # 0. 单实例保护: 已有实例在运行 → 弹窗提示并退出
+    if _already_running():
+        print("[main] ⚠️ 已有实例在运行, 本次启动取消")
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(
+            0,
+            "Things Windows 已经在运行中！\n\n"
+            "请使用已打开的窗口（查看任务栏）。\n"
+            "如需重启，请先完全退出已运行的实例，\n"
+            "否则两个窗口会互相覆盖修改内容。",
+            "Things Windows",
+            0x40,
+        )
+        return
 
     # 1. 启动后端线程
     start_backend_thread(BACKEND_PORT)

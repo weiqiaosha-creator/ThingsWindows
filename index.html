@@ -391,7 +391,7 @@
         <span class="text-xs text-gray-400">任务详情</span>
         <button @click="selectedUuid=null; selectedTask=null" class="text-gray-400 hover:text-gray-600">✕</button>
       </div>
-      <textarea v-model="selectedTask.title" @focus="ttFocusVal = selectedTask.title" @blur="quickModify('tt')"
+      <textarea v-model="selectedTask.title" @focus="ttFocusVal = selectedTask.title; ttTyped = false" @input="ttTyped = true" @blur="quickModify('tt')"
         class="w-full text-lg font-medium text-gray-800 bg-transparent border-none resize-none focus:outline-none" rows="2"></textarea>
       <div class="mt-4 space-y-3 text-sm">
         <div class="flex items-start gap-2">
@@ -422,7 +422,7 @@
         <div class="flex items-start gap-2">
           <span class="w-14 text-gray-400 shrink-0 pt-2">备注</span>
           <div class="flex-1 min-w-0">
-            <textarea v-model="selectedTask.notes" @focus="ntFocusVal = selectedTask.notes" @blur="quickModify('nt')" @paste="onNotePaste"
+            <textarea v-model="selectedTask.notes" @focus="ntFocusVal = selectedTask.notes; ntTyped = false" @input="ntTyped = true" @blur="quickModify('nt')" @paste="onNotePaste"
               class="w-full text-gray-600 bg-transparent border border-gray-200 rounded px-2 py-1 resize-none focus:outline-none focus:border-blue-400 text-xs"
               rows="3" placeholder="点这里写备注... 支持 Ctrl+V 粘贴截图"></textarea>
             <!-- v2.5.16: 本地附件缩略图 (手机端只显示标记文字, 协议限制) -->
@@ -976,6 +976,8 @@ createApp({
     const tagFocusVal = ref('');   // v2.5.25: 聚焦时的值 — 判断用户是否真的输入过
     const ttFocusVal = ref('');    // v2.5.27: 标题/备注聚焦时的值 — 内容没变就不提交 (防旧值覆盖新值)
     const ntFocusVal = ref('');
+    const ttTyped = ref(false);    // v2.5.29: 聚焦期间用户是否敲过键盘 (@input 始终触发, 即使绑定失效)
+    const ntTyped = ref(false);
     const ddInput = ref('');
     const cdInput = ref('');   // v2.5.15: 创建日期可编辑
     // 选中新任务时, 同步标签串和效期
@@ -1123,8 +1125,17 @@ createApp({
         // v2.5.27: 聚焦以来内容没变化 → 静默跳过, 不发请求。
         // 这是"改了又被还原"的根治: 绑定失效的窗口里 body 值 = 旧值,
         // 若照常提交会把别处刚改好的新内容覆盖回去。
-        if (field === 'tt' && body.tt === (ttFocusVal.value || '').trim()) return;
-        if (field === 'nt' && (body.nt || '') === (ntFocusVal.value || '')) return;
+        // v2.5.29: 用户敲过键盘 (@input) 但内容没进内部状态 → 绑定失效, 当场警告
+        if (field === 'tt' && body.tt === (ttFocusVal.value || '').trim()) {
+          if (ttTyped.value) showToast({ok: false, msg: '⚠️ 输入未生效 — 窗口输入绑定失效, 请重启应用后重试'});
+          ttTyped.value = false;
+          return;
+        }
+        if (field === 'nt' && (body.nt || '') === (ntFocusVal.value || '')) {
+          if (ntTyped.value) showToast({ok: false, msg: '⚠️ 输入未生效 — 窗口输入绑定失效, 请重启应用后重试'});
+          ntTyped.value = false;
+          return;
+        }
         // 若字段实际未变, 跳过
         if (field === 'tg') {
           const old = (selectedTask.value.tags || []).join(',');
@@ -1326,7 +1337,7 @@ createApp({
       // 置顶 & 标签
       pinnedUuids, togglePin, isPinned, displayTasks, tags, activeTag, switchTag,
       // v2.5.7/v2.5.8 详情面板 + 状态编辑
-      tagInput, tagFocusVal, ttFocusVal, ntFocusVal, ddInput, quickModify, clearDeadline, quickModifyStatus,
+      tagInput, tagFocusVal, ttFocusVal, ntFocusVal, ttTyped, ntTyped, ddInput, quickModify, clearDeadline, quickModifyStatus,
       cdInput, saveCreated, sortByDate, reordering, whenActive, toggleNewTag, newTagActive,
       attUploading, lightbox, noteImages, attUrl, uploadAttachment, onNotePaste,
       statusPopoverUuid, openStatusPopover, setStatus,

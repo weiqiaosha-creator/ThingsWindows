@@ -21,8 +21,8 @@ from urllib.parse import urlparse, parse_qs
 # ============================================================
 # 🔖 版本号 — 只改这里, 保持三处一致
 # ============================================================
-VERSION = "2.5.26"           # 内部版本 (精确到 patch)
-DISPLAY_VERSION = "2.5"      # 用户可见 (只保留前两位, 比如 "2.5" 版) — v2.5.26: 单实例保护(双实例互相覆盖修改=改了又还原的元凶)
+VERSION = "2.5.27"           # 内部版本 (精确到 patch)
+DISPLAY_VERSION = "2.5"      # 用户可见 (只保留前两位, 比如 "2.5" 版) — v2.5.27: 内容没变化的修改请求直接丢弃(前后端双保险), 旧实例/绑定失效窗口的旧值永远无法覆盖新修改
 APP_NAME = "Things Windows"
 
 import auth_store  # noqa: E402  — 安全凭证存储 (DPAPI + 设备指纹 + 2FA)
@@ -787,6 +787,21 @@ def modify_task_fields(things: Things, uuid: str, fields: dict) -> dict:
     返回 {ok: bool, changed: list[str]}
     """
     from things_cloud import _things_now, _date_to_ts, notes_to_cloud
+
+    # v2.5.27: 值没变化的字段直接丢弃 — 旧实例/输入失效的窗口会把旧值重新提交,
+    # 覆盖别处刚做的新修改 ("改了之后自动更新又变回原状"的根治)
+    cur = _cache_lookup(things, uuid) or {}
+    if "tt" in fields and str(fields["tt"] or "").strip() == str(cur.get("title") or "").strip():
+        fields.pop("tt")
+    if "nt" in fields and (fields["nt"] or "") == (cur.get("notes") or ""):
+        fields.pop("nt")
+    if "tg" in fields:
+        _new_tg = [str(n).strip() for n in (fields["tg"] or []) if n and str(n).strip()]
+        _old_tg = [str(x) for x in (cur.get("tags") or [])]
+        if _new_tg == _old_tg:
+            fields.pop("tg")
+    if "dd" in fields and str(fields["dd"] or "").strip() == str(cur.get("deadline_date") or "").strip():
+        fields.pop("dd")
 
     if not fields:
         return {"ok": False, "changed": []}
